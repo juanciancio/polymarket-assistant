@@ -1,5 +1,9 @@
 import indicators as ind
 
+# Entry thresholds
+LONG_THRESHOLD  = 5   # score >= +5 required for BULLISH entry
+SHORT_THRESHOLD = -5  # score <= -5 required for BEARISH entry (stricter than LONG)
+
 
 def detect_divergence(pm_up_price: float | None, score: int) -> dict:
     """Compare Polymarket Up price against the technical entry score.
@@ -24,12 +28,12 @@ def detect_divergence(pm_up_price: float | None, score: int) -> dict:
 
     pm = pm_up_price  # shorthand, range 0-1 (e.g. 0.72 = 72%)
 
-    if pm > 0.65 and score >= 4:
+    if pm > 0.65 and score >= LONG_THRESHOLD:
         return {"has_divergence": False, "conviction_level": "MAX_BULLISH",
                 "color": "green",
                 "message": f"PM UP {pm:.0%} + score {score:+d} — máxima convicción alcista"}
 
-    if pm < 0.35 and score <= -4:
+    if pm < 0.35 and score <= SHORT_THRESHOLD:
         return {"has_divergence": False, "conviction_level": "MAX_BEARISH",
                 "color": "red",
                 "message": f"PM UP {pm:.0%} + score {score:+d} — máxima convicción bajista"}
@@ -50,6 +54,9 @@ def detect_divergence(pm_up_price: float | None, score: int) -> dict:
 def calculate_entry_score(state) -> dict:
     """Evaluate current market conditions and return an entry scoring result.
 
+    LONG  entry requires score >= +5  (raised from +4 to filter weak entries).
+    SHORT entry requires score <= -5  (stricter filter to reduce false SHORT signals).
+
     Args:
         state: feeds.State instance with current bids/asks/mid/trades/klines.
 
@@ -58,10 +65,14 @@ def calculate_entry_score(state) -> dict:
             "score"               : int,   # total score
             "direction"           : str,   # "BULLISH" | "BEARISH" | "NEUTRAL"
             "triggered_conditions": list,  # [(label, pts), ...]
-            "entry_signal"        : bool,  # True only when |score| >= 4
+            "entry_signal"        : bool,
+            "entry_threshold_used": int,   # +4 for LONG, -5 for SHORT, 0 for NEUTRAL
         }
     """
-    _empty = {"score": 0, "direction": "NEUTRAL", "triggered_conditions": [], "entry_signal": False}
+    _empty = {
+        "score": 0, "direction": "NEUTRAL", "triggered_conditions": [],
+        "entry_signal": False, "entry_threshold_used": 0,
+    }
 
     if not state.mid or not state.klines:
         return _empty
@@ -72,11 +83,11 @@ def calculate_entry_score(state) -> dict:
     score     = 0
     triggered = []
 
-    bias  = ind.bias_score(bids, asks, mid, trades, klines)  # [-100, +100]
-    cvd5  = ind.cvd(trades, 300)
-    cvd3  = ind.cvd(trades, 180)
+    bias   = ind.bias_score(bids, asks, mid, trades, klines)  # [-100, +100]
+    cvd5   = ind.cvd(trades, 300)
+    cvd3   = ind.cvd(trades, 180)
     vwap_v = ind.vwap(klines)
-    obi_v  = ind.obi(bids, asks, mid)                        # [-1, +1]
+    obi_v  = ind.obi(bids, asks, mid)                         # [-1, +1]
     ema_s, ema_l = ind.emas(klines)
     ha     = ind.heikin_ashi(klines)
 
@@ -130,20 +141,24 @@ def calculate_entry_score(state) -> dict:
         score -= 1
         triggered.append(("HA 3+ bearish candles", -1))
 
-    # ── Thresholds ───────────────────────────────────────────────
-    if score >= 4:
+    # ── Thresholds (asymmetric) ──────────────────────────────────
+    if score >= LONG_THRESHOLD:
         direction    = "BULLISH"
         entry_signal = True
-    elif score <= -4:
+        threshold    = LONG_THRESHOLD
+    elif score <= SHORT_THRESHOLD:
         direction    = "BEARISH"
         entry_signal = True
+        threshold    = SHORT_THRESHOLD
     else:
         direction    = "NEUTRAL"
         entry_signal = False
+        threshold    = 0
 
     return {
         "score":                score,
         "direction":            direction,
         "triggered_conditions": triggered,
         "entry_signal":         entry_signal,
+        "entry_threshold_used": threshold,
     }

@@ -9,6 +9,10 @@ SL_OFFSET    = 0.15   # stop-loss:   -15% below entry_pm_price
 TRAIL_DROP   = 0.12   # trailing stop: close if price drops 12% from highest
 TRAIL_ARMED  = 0.75   # trailing stop only arms once highest_price >= this level
 
+COOLDOWN_SECS  = 45   # minimum seconds between trades
+BURST_WINDOW   = 300  # seconds for burst-limit window
+BURST_MAX      = 3    # max trades allowed within BURST_WINDOW
+
 WIN_STATUSES    = {"WIN_TP", "WIN_FULL", "WIN_TRAIL"}
 LOSS_STATUSES   = {"LOSS_SL", "LOSS_FULL"}
 CLOSED_STATUSES = WIN_STATUSES | LOSS_STATUSES
@@ -30,6 +34,10 @@ class PaperTrader:
     def __init__(self, filepath: str):
         self._file = filepath
         self._data = self._load()
+
+        # Session-only state (not persisted)
+        self.last_close_timestamp: datetime | None = None
+        self.recent_trades: list[datetime] = []
 
     # ── Persistence ─────────────────────────────────────────────
 
@@ -79,43 +87,83 @@ class PaperTrader:
                 return p
         return None
 
+    @property
+    def cooldown_remaining(self) -> int:
+        """Seconds remaining in post-trade cooldown (0 if not active)."""
+        if self.last_close_timestamp is None:
+            return 0
+        elapsed = (datetime.now(timezone.utc) - self.last_close_timestamp).total_seconds()
+        return max(0, int(COOLDOWN_SECS - elapsed))
+
+    @property
+    def is_burst_limited(self) -> bool:
+        """True if the burst-limit (BURST_MAX trades in BURST_WINDOW) is active."""
+        now    = datetime.now(timezone.utc)
+        recent = [t for t in self.recent_trades
+                  if (now - t).total_seconds() < BURST_WINDOW]
+        return len(recent) >= BURST_MAX
+
     def open_position(self, signal: dict, pm_up_price: float, btc_price: float,
                       coin: str, tf: str) -> dict | None:
         """Simulate opening a $10 position on MAX_CONVICTION signal.
 
-        Args:
-            signal:       dict with keys conviction_level, score, triggered_conditions.
-            pm_up_price:  current best-ask of the PM Up contract (0-1).
-            btc_price:    current Binance mid price (used as entry_btc_price label).
-            coin:         e.g. "BTC".
-            tf:           e.g. "15m".
-
-        Returns:
-            The newly created position dict, or None if pm_up_price is out of range.
-
-        Valid entry ranges:
-            LONG  → 0.40 <= pm_up_price <= 0.80  (Up contract has meaningful upside)
-            SHORT → 0.20 <= pm_up_price <= 0.60  (Down contract = 1-pm_up has upside)
+        Guards (checked in order, all return None without writing to JSON):
+            1. Price-range:  LONG 0.40–0.80, SHORT 0.20–0.60
+            2. Cooldown:     COOLDOWN_SECS since last close
+            3. Burst limit:  ≤ BURST_MAX trades within BURST_WINDOW seconds
         """
         cl        = signal["conviction_level"]
         direction = "LONG" if cl == "MAX_BULLISH" else "SHORT"
 
-        # Price-range guard — reject entries with poor risk/reward or near-resolved contracts
+        # ── 1. Price-range guard ─────────────────────────────────
         if direction == "LONG" and not (0.40 <= pm_up_price <= 0.80):
             return None
         if direction == "SHORT" and not (0.20 <= pm_up_price <= 0.60):
             return None
 
-        # LONG buys Up contract; SHORT buys Down contract (1 - pm_up_price)
+        # ── 2. Cooldown guard ────────────────────────────────────
+        remaining = self.cooldown_remaining
+        if remaining > 0:
+            print(f"⏳ Cooldown activo — esperando {remaining}s antes del próximo trade")
+            return None
+
+        # ── 3. Burst-limit guard ─────────────────────────────────
+        now = datetime.now(timezone.utc)
+        self.recent_trades = [t for t in self.recent_trades
+                              if (now - t).total_seconds() < BURST_WINDOW]
+        if len(self.recent_trades) >= BURST_MAX:
+            print(f"⚠️  Límite de {BURST_MAX} trades por {BURST_WINDOW // 60} minutos alcanzado")
+            return None
+
+        # ── 4. LONG VWAP filter ──────────────────────────────────
+        # Block LONG entries when price is below VWAP — all historical LONG
+        # losses had this condition active.
+        if direction == "LONG":
+            triggered_conditions = signal.get("triggered_conditions", [])
+            vwap_against = any(
+                cond[0] == "Price below VWAP"
+                for cond in triggered_conditions
+            )
+            if vwap_against:
+                print("⏭️  LONG bloqueado — precio bajo VWAP")
+                return None
+
+        # ── Compute entry fields ─────────────────────────────────
+        # LONG buys Up contract; SHORT buys Down contract (1 − pm_up_price)
         entry_pm_price = pm_up_price if direction == "LONG" else (1.0 - pm_up_price)
-        contracts      = CAPITAL / entry_pm_price
-        tp_target      = round(entry_pm_price + TP_OFFSET, 4)
-        sl_target      = round(entry_pm_price - SL_OFFSET, 4)
+
+        # Extra guard: entry_pm_price must never be 0 or 1 (resolved contract)
+        if entry_pm_price <= 0.0 or entry_pm_price >= 1.0:
+            return None
+
+        contracts  = CAPITAL / entry_pm_price
+        tp_target  = round(entry_pm_price + TP_OFFSET, 4)
+        sl_target  = round(entry_pm_price - SL_OFFSET, 4)
 
         pos_id   = len(self._data["positions"]) + 1
         position = {
             "id":                   pos_id,
-            "timestamp_open":       datetime.now(timezone.utc).isoformat(),
+            "timestamp_open":       now.isoformat(),
             "timestamp_close":      None,
             "coin":                 coin,
             "timeframe":            tf,
@@ -137,72 +185,100 @@ class PaperTrader:
             "triggered_conditions": signal.get("triggered_conditions", []),
         }
 
+        # Dedup guard — never write two records with the same ID
+        existing_ids = {p["id"] for p in self._data["positions"]}
+        if position["id"] in existing_ids:
+            return None
+
         self._data["positions"].append(position)
         self._recalc_summary()
         self._save()
+        self.recent_trades.append(now)
         return position
 
     def check_resolution(self, position: dict, current_pm_up_price: float,
                          current_btc_price: float) -> dict:
         """Evaluate TP / trailing-stop / SL / full resolution for the open position.
 
-        Priority order (both directions):
-            1. WIN_TP    — contract price crossed tp_target
-            2. WIN_TRAIL — trailing stop triggered (armed at TRAIL_ARMED, drops TRAIL_DROP)
-            3. LOSS_SL   — contract price fell below sl_target
+        Contract-price semantics:
+            LONG  → holds UP contract   → current_price = current_pm_up_price
+            SHORT → holds DOWN contract → current_price = 1 − current_pm_up_price
+
+        entry_pm_price is always the price of the held contract at open
+        (UP price for LONG, DOWN price for SHORT — set in open_position()).
+
+        highest_price tracks the peak of the held contract's price, enabling
+        a symmetric trailing stop for both directions.
+
+        Priority order:
+            1. WIN_TP    — held contract price crossed tp_target
+            2. WIN_TRAIL — trailing stop triggered AND current_price > entry_price (profit)
+                           → LOSS_SL if current_price <= entry_price (loss despite stop)
+            3. LOSS_SL   — held contract price fell below sl_target
             4. WIN_FULL  — contract resolved to $1.00 (price >= 0.95)
             5. LOSS_FULL — contract resolved to $0.00 (price <= 0.05)
-
-        For SHORT, all comparisons use down_price = 1 − pm_up_price.
-
-        Returns the position dict (mutated in-place if resolved, otherwise with updated
-        highest_price only).
         """
         # ── tick guard ───────────────────────────────────────────
         position["ticks_open"] = position.get("ticks_open", 0) + 1
         if position["ticks_open"] < 3:
             return position
 
-        direction = position["direction"]
+        direction   = position["direction"]
+        entry_price = position["entry_pm_price"]   # price of held contract at open
+        contracts   = position["contracts"]
+        capital     = position["capital"]
 
-        # ── contract price from our perspective ──────────────────
-        cur = current_pm_up_price if direction == "LONG" else (1.0 - current_pm_up_price)
+        # ── price of the contract we're holding ──────────────────
+        if direction == "SHORT":
+            current_price = 1.0 - current_pm_up_price  # DOWN contract
+        else:
+            current_price = current_pm_up_price         # UP contract
 
-        # ── update highest_price (trailing stop tracking) ────────
-        highest = max(position.get("highest_price", cur), cur)
-        position["highest_price"] = highest
+        # ── update highest_price (peak of held contract) ─────────
+        if current_price > position.get("highest_price", 0):
+            position["highest_price"] = current_price
+        highest = position["highest_price"]
 
-        tp  = position.get("tp_target", cur + TP_OFFSET)
-        sl  = position.get("sl_target", cur - SL_OFFSET)
-        trail_stop = round(highest - TRAIL_DROP, 4)
+        tp  = position.get("tp_target", entry_price + TP_OFFSET)
+        sl  = position.get("sl_target", entry_price - SL_OFFSET)
 
         new_status = None
         exit_price = None
 
         # 1. Take-profit
-        if cur >= tp:
+        if current_price >= tp:
             new_status = "WIN_TP"
-            exit_price = cur
+            exit_price = current_price
 
-        # 2. Trailing stop (armed once highest reached TRAIL_ARMED)
-        elif highest >= TRAIL_ARMED and cur <= trail_stop:
-            new_status = "WIN_TRAIL"
-            exit_price = cur
+        # 2. Trailing stop — armed once highest reached TRAIL_ARMED, fires on TRAIL_DROP
+        elif highest >= TRAIL_ARMED and current_price <= round(highest - TRAIL_DROP, 4):
+            exit_price = current_price
+            # Only WIN if we exit above entry; otherwise classify as LOSS_SL
+            if exit_price > entry_price:
+                new_status = "WIN_TRAIL"
+            else:
+                new_status = "LOSS_SL"
 
         # 3. Stop-loss
-        elif cur <= sl:
+        elif current_price <= sl:
             new_status = "LOSS_SL"
-            exit_price = cur
+            exit_price = current_price
 
         # 4. Full win resolution
-        elif cur >= 0.95:
+        elif current_price >= 0.95:
             new_status = "WIN_FULL"
             exit_price = 1.00
 
         # 5. Full loss resolution
-        elif cur <= 0.05:
+        elif current_price <= 0.05:
             new_status = "LOSS_FULL"
             exit_price = 0.00
+
+        # Safety: WIN_TRAIL must never produce pnl <= 0
+        if new_status == "WIN_TRAIL":
+            pnl_check = (contracts * exit_price) - capital
+            if pnl_check <= 0:
+                new_status = "LOSS_SL"
 
         if new_status is not None:
             position["status"]          = new_status
@@ -218,32 +294,16 @@ class PaperTrader:
 
             self._recalc_summary()
             self._save()
+            self.last_close_timestamp = datetime.now(timezone.utc)
 
         return position
 
     def calculate_pnl(self, position: dict) -> float | None:
-        """Profit/loss in USD: (contracts × exit_pm_price) − capital.
-
-        Works for all exit types:
-          WIN_TP / WIN_TRAIL → exit at real market price (partial gain)
-          WIN_FULL           → exit at 1.00
-          LOSS_SL            → exit at real market price (partial loss)
-          LOSS_FULL          → exit at 0.00 → always −$10.00
-        """
+        """Profit/loss in USD: (contracts × exit_pm_price) − capital."""
         exit_pm = position.get("exit_pm_price")
         if exit_pm is None:
             return None
-
-        pnl = (position["contracts"] * exit_pm) - position["capital"]
-
-        if position.get("status") in WIN_STATUSES and pnl == 0.0:
-            print(
-                f"[paper_trading] WARNING: {position.get('status')} trade "
-                f"#{position.get('id')} produced pnl=0.00 — "
-                f"contracts={position['contracts']}, entry_pm={position['entry_pm_price']}"
-            )
-
-        return pnl
+        return (position["contracts"] * exit_pm) - position["capital"]
 
     def unrealized_pnl(self, current_pm_up_price: float) -> float | None:
         """Mark-to-market P&L for the open position, or None if no open position."""

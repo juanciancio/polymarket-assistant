@@ -1,3 +1,6 @@
+import time as _time
+from datetime import datetime, timezone as _tz
+
 from rich.table   import Table
 from rich.panel   import Panel
 from rich.console import Group
@@ -5,8 +8,6 @@ from rich.text    import Text
 from rich         import box as bx
 
 import config
-import indicators as ind
-import scoring
 import paper_trading as pt
 
 
@@ -35,62 +36,7 @@ def _col(val):
     return "green" if val > 0 else "red"
 
 
-TREND_THRESH = 3
-
-
-def _score_trend(st):
-    score = 0
-
-    obi_v = ind.obi(st.bids, st.asks, st.mid) if st.mid else 0.0
-    if obi_v > config.OBI_THRESH:
-        score += 1
-    elif obi_v < -config.OBI_THRESH:
-        score -= 1
-
-    cvd5 = ind.cvd(st.trades, 300)
-    score += 1 if cvd5 > 0 else -1 if cvd5 < 0 else 0
-
-    rsi_v = ind.rsi(st.klines)
-    if rsi_v is not None:
-        if rsi_v > config.RSI_OB:
-            score -= 1
-        elif rsi_v < config.RSI_OS:
-            score += 1
-
-    _, _, hv = ind.macd(st.klines)
-    if hv is not None:
-        score += 1 if hv > 0 else -1
-
-    vwap_v = ind.vwap(st.klines)
-    if vwap_v and st.mid:
-        score += 1 if st.mid > vwap_v else -1
-
-    es, el = ind.emas(st.klines)
-    if es is not None and el is not None:
-        score += 1 if es > el else -1
-
-    bw, aw = ind.walls(st.bids, st.asks)
-    score += min(len(bw), 2)
-    score -= min(len(aw), 2)
-
-    ha = ind.heikin_ashi(st.klines)
-    if len(ha) >= 3:
-        last3 = ha[-3:]
-        if all(c["green"] for c in last3):
-            score += 1
-        elif all(not c["green"] for c in last3):
-            score -= 1
-
-    if score >= TREND_THRESH:
-        return score, "BULLISH",  "green"
-    elif score <= -TREND_THRESH:
-        return score, "BEARISH",  "red"
-    else:
-        return score, "NEUTRAL",  "yellow"
-
-
 def _bias_display(bias: float) -> tuple[str, str, str]:
-    """Return (label, pct_str, color) for a bias score in [-100, +100]."""
     pct = abs(bias)
     if bias > 10:
         label, col = "BULLISH", "green"
@@ -101,28 +47,52 @@ def _bias_display(bias: float) -> tuple[str, str, str]:
     return label, f"{pct:.0f}%", col
 
 
-def _header(st, coin, tf):
-    score, label, col = _score_trend(st)
-    bias = ind.bias_score(st.bids, st.asks, st.mid, st.trades, st.klines)
+# ── Panel builders — all accept pre-computed `ds` dict ────────────────────────
+
+def _header(ds: dict) -> Panel:
+    score = ds["trend_score"]
+    label = ds["trend_label"]
+    col   = ds["trend_col"]
+    bias  = ds["bias"]
     b_label, b_pct, b_col = _bias_display(bias)
+    coin  = ds["coin"]
+    tf    = ds["tf"]
+    mid   = ds["mid"]
+    pm_up = ds["pm_up"]
+    pm_dn = ds["pm_dn"]
 
     parts = [
         (f"  {coin} ", "bold white on dark_blue"),
-        (f" {tf} ", "bold white on dark_green"),
-        (f"  Price: {_p(st.mid)}  ", "bold white"),
+        (f" {tf} ",    "bold white on dark_green"),
+        (f"  Price: {_p(mid)}  ", "bold white"),
     ]
 
-    if st.pm_up is not None and st.pm_dn is not None:
-        parts.append((f"  PM ↑ {st.pm_up:.3f}  ↓ {st.pm_dn:.3f}  ", "cyan"))
+    if pm_up is not None and pm_dn is not None:
+        parts.append((f"  PM ↑ {pm_up:.3f}  ↓ {pm_dn:.3f}  ", "cyan"))
+
+    if ds["pm_up_id"] is not None:
+        pm_age = _time.time() - ds["last_pm_update"] if ds["last_pm_update"] > 0 else float("inf")
+        if ds["pm_reconnecting"] or ds["reconnection_in_progress"]:
+            parts.append(("  ◌ RECONECTANDO...", "yellow"))
+        elif pm_age > 60:
+            parts.append(("  ✕ SIN DATOS", "red"))
+        elif pm_up is not None:
+            parts.append(("  ● LIVE", "green"))
+
+    end_time = ds["market_end_time"]
+    if end_time is not None:
+        secs_left = (end_time - datetime.now(_tz.utc)).total_seconds()
+        if 0 < secs_left <= 60:
+            parts.append((f"  ⏱ {int(secs_left)}s", "bold yellow"))
+        elif 0 < secs_left <= 300:
+            m, s = divmod(int(secs_left), 60)
+            parts.append((f"  ⏱ {m}m{s:02d}s", "dim cyan"))
 
     parts.append((f" {label} ", f"bold white on {col}"))
     parts.append((f"  ({score:+d})", col))
-
-    # ── Bias Score ────────────────────────────────────────────────
     parts.append(("   │  ", "dim"))
     parts.append(("Bias: ", "dim white"))
     parts.append((f"{b_label} {b_pct}", f"bold {b_col}"))
-
     parts.append(("\n", ""))
     parts.append(("  Polymarket Crypto Assistant", "dim white"))
     parts.append(("  |  @SolSt1ne", "dim cyan"))
@@ -135,10 +105,11 @@ def _header(st, coin, tf):
     )
 
 
-def _ob_panel(st):
-    obi_v      = ind.obi(st.bids, st.asks, st.mid) if st.mid else 0.0
-    bw, aw     = ind.walls(st.bids, st.asks)
-    dep        = ind.depth_usd(st.bids, st.asks, st.mid) if st.mid else {}
+def _ob_panel(ds: dict) -> Panel:
+    obi_v = ds["obi"]
+    bw    = ds["walls_buy"]
+    aw    = ds["walls_sell"]
+    dep   = ds["depth"]
 
     if obi_v > config.OBI_THRESH:
         oc, os = "green", "BULLISH"
@@ -148,9 +119,9 @@ def _ob_panel(st):
         oc, os = "yellow", "NEUTRAL"
 
     t = Table(box=None, show_header=False, pad_edge=False, expand=True)
-    t.add_column("label", style="dim",    width=16)
-    t.add_column("value",                 width=18)
-    t.add_column("signal",                width=14)
+    t.add_column("label", style="dim", width=16)
+    t.add_column("value",             width=18)
+    t.add_column("signal",            width=14)
 
     t.add_row("OBI",
               f"[{oc}]{obi_v * 100:+.1f} %[/{oc}]",
@@ -173,9 +144,10 @@ def _ob_panel(st):
     return Panel(t, title="ORDER BOOK", box=bx.ROUNDED, expand=True)
 
 
-def _flow_panel(st):
-    cvds = {s: ind.cvd(st.trades, s) for s in config.CVD_WINDOWS}
-    poc, vp = ind.vol_profile(st.klines)
+def _flow_panel(ds: dict) -> Panel:
+    cvd_windows = ds["cvd_windows"]
+    poc         = ds["poc"]
+    vp          = ds["vol_profile"]
 
     t = Table(box=None, show_header=False, pad_edge=False, expand=True)
     t.add_column("label", style="dim", width=16)
@@ -183,13 +155,13 @@ def _flow_panel(st):
     t.add_column("dir",                width=4)
 
     for secs in config.CVD_WINDOWS:
-        v  = cvds[secs]
-        c  = _col(v)
+        v = cvd_windows.get(secs, 0)
+        c = _col(v)
         t.add_row(f"CVD {secs // 60}m",
                   f"[{c}]{_p(v)}[/{c}]",
                   f"[{c}]{'↑' if v > 0 else '↓'}[/{c}]")
 
-    delta_v = ind.cvd(st.trades, config.DELTA_WINDOW)
+    delta_v = ds["delta_1m"]
     dc = _col(delta_v)
     t.add_row("Delta 1m",
               f"[{dc}]{_p(delta_v)}[/{dc}]",
@@ -198,15 +170,15 @@ def _flow_panel(st):
     t.add_row("POC", f"[bold]{_p(poc)}[/bold]", "")
 
     if vp:
-        max_v  = max(v for _, v in vp) or 1
-        poc_i  = min(range(len(vp)), key=lambda i: abs(vp[i][0] - poc))
-        half   = config.VP_SHOW // 2
-        start  = max(0, poc_i - half)
-        end    = min(len(vp), start + config.VP_SHOW)
-        start  = max(0, end - config.VP_SHOW)
+        max_v = max(v for _, v in vp) or 1
+        poc_i = min(range(len(vp)), key=lambda i: abs(vp[i][0] - poc))
+        half  = config.VP_SHOW // 2
+        start = max(0, poc_i - half)
+        end   = min(len(vp), start + config.VP_SHOW)
+        start = max(0, end - config.VP_SHOW)
 
         for i in range(end - 1, start - 1, -1):
-            p, v = vp[i]
+            p, v    = vp[i]
             bar_len = int(v / max_v * 14)
             bar     = "█" * bar_len + "░" * (14 - bar_len)
             is_poc  = i == poc_i
@@ -218,12 +190,16 @@ def _flow_panel(st):
     return Panel(t, title="FLOW & VOLUME", box=bx.ROUNDED, expand=True)
 
 
-def _ta_panel(st):
-    rsi_v              = ind.rsi(st.klines)
-    macd_v, sig_v, hv  = ind.macd(st.klines)
-    vwap_v             = ind.vwap(st.klines)
-    ema_s, ema_l       = ind.emas(st.klines)
-    ha                 = ind.heikin_ashi(st.klines)
+def _ta_panel(ds: dict) -> Panel:
+    rsi_v  = ds["rsi"]
+    macd_v = ds["macd_v"]
+    sig_v  = ds["macd_sig"]
+    hv     = ds["macd_hist"]
+    vwap_v = ds["vwap"]
+    ema_s  = ds["ema_s"]
+    ema_l  = ds["ema_l"]
+    ha     = ds["ha"]
+    mid    = ds["mid"]
 
     t = Table(box=None, show_header=False, pad_edge=False, expand=True)
     t.add_column("label",  style="dim", width=16)
@@ -232,9 +208,9 @@ def _ta_panel(st):
 
     if rsi_v is not None:
         if rsi_v > config.RSI_OB:
-            rc, rs = "red",   "OVERBOUGHT"
+            rc, rs = "red",    "OVERBOUGHT"
         elif rsi_v < config.RSI_OS:
-            rc, rs = "green", "OVERSOLD"
+            rc, rs = "green",  "OVERSOLD"
         else:
             rc, rs = "yellow", f"{rsi_v:.0f}"
         t.add_row("RSI(14)", f"[{rc}]{rsi_v:.1f}[/{rc}]", f"[{rc}]{rs}[/{rc}]")
@@ -243,16 +219,17 @@ def _ta_panel(st):
 
     if macd_v is not None:
         mc = _col(macd_v)
-        t.add_row("MACD", f"[{mc}]{macd_v:+.6f}[/{mc}]", f"[{mc}]{'↑' if macd_v > 0 else '↓'}[/{mc}]")
+        t.add_row("MACD", f"[{mc}]{macd_v:+.6f}[/{mc}]",
+                  f"[{mc}]{'↑' if macd_v > 0 else '↓'}[/{mc}]")
         if sig_v is not None:
             cross = "[green]bullish[/green]" if hv is not None and hv > 0 else "[red]bearish[/red]"
             t.add_row("Signal", f"{sig_v:+.6f}", cross)
     else:
         t.add_row("MACD", "[dim]—[/dim]", "")
 
-    if vwap_v and st.mid:
-        vc  = "green" if st.mid > vwap_v else "red"
-        vr  = "above" if st.mid > vwap_v else "below"
+    if vwap_v and mid:
+        vc  = "green" if mid > vwap_v else "red"
+        vr  = "above" if mid > vwap_v else "below"
         t.add_row("VWAP", _p(vwap_v), f"[{vc}]price {vr}[/{vc}]")
 
     if ema_s is not None and ema_l is not None:
@@ -272,53 +249,57 @@ def _ta_panel(st):
     return Panel(t, title="TECHNICAL", box=bx.ROUNDED, expand=True)
 
 
-def _signals_panel(st):
-    sigs = []
+def _signals_panel(ds: dict) -> Panel:
+    sigs   = []
+    obi_v  = ds["obi"]
+    cvd5   = ds["cvd_windows"].get(300, 0)
+    rsi_v  = ds["rsi"]
+    hv     = ds["macd_hist"]
+    vwap_v = ds["vwap"]
+    mid    = ds["mid"]
+    ema_s  = ds["ema_s"]
+    ema_l  = ds["ema_l"]
+    bw     = ds["walls_buy"]
+    aw     = ds["walls_sell"]
+    ha     = ds["ha"]
+    bias   = ds["bias"]
 
-    obi_v = ind.obi(st.bids, st.asks, st.mid) if st.mid else 0.0
     if abs(obi_v) > config.OBI_THRESH:
         c = "green" if obi_v > 0 else "red"
         d = "BULLISH" if obi_v > 0 else "BEARISH"
         sigs.append(f"[{c}]OBI → {d} ({obi_v * 100:+.1f} %)[/{c}]")
 
-    cvd5 = ind.cvd(st.trades, 300)
     if cvd5 != 0:
         c = "green" if cvd5 > 0 else "red"
         d = "buy pressure" if cvd5 > 0 else "sell pressure"
         sigs.append(f"[{c}]CVD 5m → {d} ({_p(cvd5)})[/{c}]")
 
-    rsi_v = ind.rsi(st.klines)
     if rsi_v is not None:
         if rsi_v > config.RSI_OB:
             sigs.append(f"[red]RSI → overbought ({rsi_v:.0f})[/red]")
         elif rsi_v < config.RSI_OS:
             sigs.append(f"[green]RSI → oversold ({rsi_v:.0f})[/green]")
 
-    _, _, hv = ind.macd(st.klines)
     if hv is not None:
         c = "green" if hv > 0 else "red"
         d = "bullish" if hv > 0 else "bearish"
         sigs.append(f"[{c}]MACD hist → {d}[/{c}]")
 
-    vwap_v = ind.vwap(st.klines)
-    if vwap_v and st.mid:
-        c = "green" if st.mid > vwap_v else "red"
-        d = "above" if st.mid > vwap_v else "below"
+    if vwap_v and mid:
+        c = "green" if mid > vwap_v else "red"
+        d = "above" if mid > vwap_v else "below"
         sigs.append(f"[{c}]Price {d} VWAP[/{c}]")
 
-    es, el = ind.emas(st.klines)
-    if es is not None and el is not None:
-        c = "green" if es > el else "red"
-        d = "golden" if es > el else "death"
+    if ema_s is not None and ema_l is not None:
+        c = "green" if ema_s > ema_l else "red"
+        d = "golden" if ema_s > ema_l else "death"
         sigs.append(f"[{c}]EMA → {d} cross[/{c}]")
 
-    bw, aw = ind.walls(st.bids, st.asks)
     if bw:
         sigs.append(f"[green]BUY wall × {len(bw)} levels[/green]")
     if aw:
         sigs.append(f"[red]SELL wall × {len(aw)} levels[/red]")
 
-    ha = ind.heikin_ashi(st.klines)
     if len(ha) >= 3:
         last3 = ha[-3:]
         if all(c["green"] for c in last3):
@@ -329,11 +310,11 @@ def _signals_panel(st):
     if not sigs:
         sigs.append("[dim]No active signals[/dim]")
 
-    score, label, col = _score_trend(st)
-    bias = ind.bias_score(st.bids, st.asks, st.mid, st.trades, st.klines)
+    score = ds["trend_score"]
+    label = ds["trend_label"]
+    col   = ds["trend_col"]
     b_label, b_pct, b_col = _bias_display(bias)
 
-    # ── TREND bar (qualitative) ─────────────────────────────────
     max_score = 10
     filled = int(min(abs(score), max_score) / max_score * 14)
     bar    = "█" * filled + "░" * (14 - filled)
@@ -341,7 +322,6 @@ def _signals_panel(st):
     sigs.append(f"[{col} bold]TREND: {label}[/{col} bold]  "
                 f"[{col}]{bar}[/{col}]  [{col}]{score:+d}[/{col}]")
 
-    # ── BIAS SCORE bar (quantitative) ───────────────────────────
     bias_filled = int(abs(bias) / 100 * 20)
     bias_bar    = "█" * bias_filled + "░" * (20 - bias_filled)
     sign_arrow  = "▲" if bias >= 0 else "▼"
@@ -349,10 +329,9 @@ def _signals_panel(st):
                 f"[{b_col}]{sign_arrow} {bias_bar}[/{b_col}]  "
                 f"[dim]{bias:+.1f}[/dim]")
 
-    # ── ENTRY SCORE ─────────────────────────────────────────────
-    entry = scoring.calculate_entry_score(st)
-    e_score = entry["score"]
-    e_dir   = entry["direction"]
+    entry   = ds.get("entry", {})
+    e_score = entry.get("score", 0)
+    e_dir   = entry.get("direction", "NEUTRAL")
     e_col   = "green" if e_dir == "BULLISH" else "red" if e_dir == "BEARISH" else "dim"
     e_filled = int(min(abs(e_score), 7) / 7 * 20)
     e_bar    = "█" * e_filled + "░" * (20 - e_filled)
@@ -363,16 +342,15 @@ def _signals_panel(st):
                 f"[{e_col}]{e_arrow} {e_bar}[/{e_col}]  "
                 f"[dim]{e_score:+d}[/dim]")
 
-    if entry["triggered_conditions"]:
+    if entry.get("triggered_conditions"):
         parts = "  ".join(
-            f"[{'green' if pts > 0 else 'red'}]{label} ({pts:+d})[/{'green' if pts > 0 else 'red'}]"
-            for label, pts in entry["triggered_conditions"]
+            f"[{'green' if pts > 0 else 'red'}]{lbl} ({pts:+d})[/{'green' if pts > 0 else 'red'}]"
+            for lbl, pts in entry["triggered_conditions"]
         )
         sigs.append(f"  {parts}")
 
-    # ── CONVICTION / DIVERGENCE banner ───────────────────────────
-    div = scoring.detect_divergence(st.pm_up, e_score)
-    cl  = div["conviction_level"]
+    div = ds.get("divergence", {})
+    cl  = div.get("conviction_level", "NEUTRAL")
     if cl == "MAX_BULLISH":
         sigs.append("[bold bright_green on dark_green] ⚡ MAX CONVICTION: LONG [/bold bright_green on dark_green]")
     elif cl == "MAX_BEARISH":
@@ -383,12 +361,13 @@ def _signals_panel(st):
     return Panel("\n".join(sigs), title="SIGNALS", box=bx.ROUNDED, expand=True)
 
 
-def _paper_panel(trader: "pt.PaperTrader", st) -> Panel:
-    s   = trader.summary
-    wr  = s["win_rate"]
+def _paper_panel(trader: "pt.PaperTrader", ds: dict) -> Panel:
+    s       = trader.summary
+    wr      = s["win_rate"]
     wr_col  = "green" if wr >= 55 else "yellow" if wr >= 45 else "red"
     pnl_col = "green" if s["total_pnl"] >= 0 else "red"
     avg_col = "green" if s["avg_pnl_per_trade"] >= 0 else "red"
+    pm_up   = ds["pm_up"]
 
     t = Table(box=None, show_header=False, pad_edge=False, expand=True)
     t.add_column("label", style="dim", width=20)
@@ -398,18 +377,10 @@ def _paper_panel(trader: "pt.PaperTrader", st) -> Panel:
         "Trades / W / L",
         f"{s['total_trades']}  │  [green]W: {s['wins']}[/green]  │  [red]L: {s['losses']}[/red]",
     )
-    t.add_row(
-        "Win Rate",
-        f"[{wr_col} bold]{wr:.1f}%[/{wr_col} bold]",
-    )
-    t.add_row(
-        "P&L Total",
-        f"[{pnl_col}]{'+' if s['total_pnl'] >= 0 else ''}${s['total_pnl']:.2f}[/{pnl_col}]",
-    )
-    t.add_row(
-        "Avg / trade",
-        f"[{avg_col}]{'+' if s['avg_pnl_per_trade'] >= 0 else ''}${s['avg_pnl_per_trade']:.2f}[/{avg_col}]",
-    )
+    t.add_row("Win Rate",   f"[{wr_col} bold]{wr:.1f}%[/{wr_col} bold]")
+    t.add_row("P&L Total",  f"[{pnl_col}]{'+' if s['total_pnl'] >= 0 else ''}${s['total_pnl']:.2f}[/{pnl_col}]")
+    t.add_row("Avg / trade", f"[{avg_col}]{'+' if s['avg_pnl_per_trade'] >= 0 else ''}${s['avg_pnl_per_trade']:.2f}[/{avg_col}]")
+    t.add_row("Umbral",     "[green]LONG ≥+5[/green]  │  [red]SHORT ≤-5[/red]")
 
     open_pos = trader.current_open_position
     if open_pos:
@@ -422,23 +393,19 @@ def _paper_panel(trader: "pt.PaperTrader", st) -> Panel:
         coin_tf   = f"{open_pos['coin']} {open_pos['timeframe']}"
 
         cur_contract = (
-            (st.pm_up if direction == "LONG" else (1.0 - st.pm_up))
-            if st.pm_up is not None else None
+            (pm_up if direction == "LONG" else (1.0 - pm_up))
+            if pm_up is not None else None
         )
 
         t.add_row("", "")
-        t.add_row(
-            "POSICIÓN ABIERTA",
-            f"[{d_col} bold]{direction}[/{d_col} bold]  {coin_tf}",
-        )
-        t.add_row(
-            "Entrada",
-            f"${entry_pm:.3f}  │  "
-            f"[green]TP: ${tp:.3f}[/green]  │  "
-            f"[red]SL: ${sl:.3f}[/red]",
-        )
+        t.add_row("POSICIÓN ABIERTA",
+                  f"[{d_col} bold]{direction}[/{d_col} bold]  {coin_tf}")
+        t.add_row("Entrada",
+                  f"${entry_pm:.3f}  │  "
+                  f"[green]TP: ${tp:.3f}[/green]  │  "
+                  f"[red]SL: ${sl:.3f}[/red]")
         if cur_contract is not None:
-            upnl  = trader.unrealized_pnl(st.pm_up)
+            upnl  = trader.unrealized_pnl(pm_up)
             u_col = "green" if (upnl or 0) >= 0 else "red"
             arrow = "↑" if (upnl or 0) >= 0 else "↓"
             trail_stop = round(highest - 0.12, 3)
@@ -446,35 +413,40 @@ def _paper_panel(trader: "pt.PaperTrader", st) -> Panel:
                 f"  │  [yellow]trail stop: ${trail_stop:.3f}[/yellow]"
                 if highest >= 0.75 else ""
             )
-            t.add_row(
-                "Actual",
-                f"${cur_contract:.3f}{high_str}",
-            )
+            t.add_row("Actual", f"${cur_contract:.3f}{high_str}")
             if upnl is not None:
-                t.add_row(
-                    "P&L flotante",
-                    f"[{u_col} bold]{'+' if upnl >= 0 else ''}${upnl:.2f} {arrow}[/{u_col} bold]",
-                )
+                t.add_row("P&L flotante",
+                          f"[{u_col} bold]{'+' if upnl >= 0 else ''}${upnl:.2f} {arrow}[/{u_col} bold]")
     else:
         t.add_row("", "")
-        t.add_row("Estado", "[dim]Sin posición abierta — esperando señal[/dim]")
+        cooldown = trader.cooldown_remaining
+        if cooldown > 0:
+            m, s2 = divmod(cooldown, 60)
+            t.add_row("Estado",
+                      f"[yellow]⏳ Cooldown: {cooldown}s — próxima entrada en {m:02d}:{s2:02d}[/yellow]")
+        elif trader.is_burst_limited:
+            t.add_row("Estado",
+                      f"[yellow]⚠️  Límite de trades por ventana ({pt.BURST_MAX}/{pt.BURST_WINDOW // 60}min)[/yellow]")
+        else:
+            t.add_row("Estado", "[dim]Sin posición abierta — esperando señal[/dim]")
 
     return Panel(t, title="PAPER TRADING", box=bx.ROUNDED, expand=True)
 
 
-def render(st, coin, tf, trader: "pt.PaperTrader | None" = None) -> "_Group":
-    header = _header(st, coin, tf)
+def render(ds: dict, trader: "pt.PaperTrader | None" = None) -> "_Group":
+    """Build the full dashboard layout from pre-computed state dict."""
+    header = _header(ds)
 
     grid = Table(box=None, pad_edge=False, show_header=False, expand=True)
     grid.add_column(ratio=1)
     grid.add_column(ratio=1)
     grid.add_row(
-        Group(_ob_panel(st), _ta_panel(st)),
-        _flow_panel(st),
+        Group(_ob_panel(ds), _ta_panel(ds)),
+        _flow_panel(ds),
     )
 
-    panels: list = [header, grid, _signals_panel(st)]
+    panels: list = [header, grid, _signals_panel(ds)]
     if trader is not None:
-        panels.append(_paper_panel(trader, st))
+        panels.append(_paper_panel(trader, ds))
 
     return _Group(*panels)

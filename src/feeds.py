@@ -25,16 +25,32 @@ class State:
         self.pm_up:     float | None = None
         self.pm_dn:     float | None = None
 
+        # ── PM connection health ─────────────────────────────────
+        self.last_pm_update: float    = 0.0   # epoch of last WS message
+        self.pm_price_frozen_count: int = 0   # consecutive stale-price ticks
+        self.pm_needs_reconnect: bool  = False # watchdog/scheduler → pm_feed signal
+        self.pm_reconnecting:    bool  = False # True while searching new contract
+
+        # ── Proactive reconnection (endDate-based) ────────────────
+        self.market_end_time: "datetime | None"  = None  # endDate of current contract
+        self.next_token_up:   str | None         = None  # pre-fetched next Up token
+        self.next_token_dn:   str | None         = None  # pre-fetched next Down token
+        self.next_token_prefetched: bool         = False # True once prefetch attempted
+        self.reconnection_in_progress: bool      = False # guard: only one actor reconnects
+
 
 OB_POLL_INTERVAL = 2
 
 
 async def ob_poller(symbol: str, state: State):
-    url = f"{config.BINANCE_REST}/depth"
+    url    = f"{config.BINANCE_REST}/depth"
+    params = {"symbol": symbol, "limit": 20}
     print(f"  [Binance OB] polling {symbol} every {OB_POLL_INTERVAL}s")
     while True:
         try:
-            resp = requests.get(url, params={"symbol": symbol, "limit": 20}, timeout=3).json()
+            resp = await asyncio.to_thread(
+                lambda: requests.get(url, params=params, timeout=3).json()
+            )
             state.bids = [(float(p), float(q)) for p, q in resp["bids"]]
             state.asks = [(float(p), float(q)) for p, q in resp["asks"]]
             if state.bids and state.asks:
@@ -179,7 +195,7 @@ def _build_slug(coin: str, tf: str) -> str | None:
 
 
 def fetch_pm_event_data(coin: str, tf: str) -> dict | None:
-    """Fetch full event data from Polymarket API."""
+    """Fetch full event data from Polymarket API (blocking — call via asyncio.to_thread in async contexts)."""
     slug = _build_slug(coin, tf)
     if slug is None:
         return None
@@ -192,6 +208,16 @@ def fetch_pm_event_data(coin: str, tf: str) -> dict | None:
     except Exception as e:
         print(f"  [PM] event fetch failed ({slug}): {e}")
         return None
+
+
+async def fetch_pm_tokens_full_async(coin: str, tf: str) -> tuple:
+    """Async wrapper for fetch_pm_tokens_full — non-blocking."""
+    return await asyncio.to_thread(fetch_pm_tokens_full, coin, tf)
+
+
+async def prefetch_next_pm_tokens_async(coin: str, tf: str) -> tuple:
+    """Async wrapper for prefetch_next_pm_tokens — non-blocking."""
+    return await asyncio.to_thread(prefetch_next_pm_tokens, coin, tf)
 
 
 def fetch_pm_tokens(coin: str, tf: str) -> tuple:
@@ -207,14 +233,95 @@ def fetch_pm_tokens(coin: str, tf: str) -> tuple:
         return None, None
 
 
+def fetch_pm_tokens_full(coin: str, tf: str) -> tuple:
+    """Fetch PM token IDs plus endDate for the current contract.
+
+    Returns:
+        (up_id, dn_id, end_time) where end_time is a timezone-aware datetime or None.
+    """
+    event_data = fetch_pm_event_data(coin, tf)
+    if event_data is None:
+        return None, None, None
+    try:
+        ids      = json.loads(event_data["markets"][0]["clobTokenIds"])
+        up_id    = ids[0]
+        dn_id    = ids[1]
+        end_raw  = event_data.get("endDate") or event_data.get("markets", [{}])[0].get("endDate")
+        end_time = None
+        if end_raw:
+            # Gamma returns ISO-8601 strings like "2025-03-11T14:00:00Z"
+            end_time = datetime.fromisoformat(end_raw.replace("Z", "+00:00"))
+        return up_id, dn_id, end_time
+    except Exception as e:
+        print(f"  [PM] token/endDate extraction failed: {e}")
+        return None, None, None
+
+
+def _build_next_slug(coin: str, tf: str) -> str | None:
+    """Build the slug for the NEXT contract period (for timestamp-based TFs only)."""
+    now_utc = datetime.now(timezone.utc)
+    now_ts  = int(now_utc.timestamp())
+
+    if tf == "5m":
+        ts = (now_ts // 300) * 300 + 300
+        return f"{config.COIN_PM[coin]}-updown-5m-{ts}"
+
+    if tf == "15m":
+        ts = (now_ts // 900) * 900 + 900
+        return f"{config.COIN_PM[coin]}-updown-15m-{ts}"
+
+    if tf == "4h":
+        ts = ((now_ts - 3600) // 14400) * 14400 + 3600 + 14400
+        return f"{config.COIN_PM[coin]}-updown-4h-{ts}"
+
+    # 1h / daily slugs are ET-time-based; caller should fall back to T+0 re-fetch
+    return None
+
+
+def prefetch_next_pm_tokens(coin: str, tf: str) -> tuple:
+    """Try to fetch the next contract's tokens before the current one resolves.
+
+    Returns:
+        (up_id, dn_id) or (None, None) if not yet available.
+    """
+    slug = _build_next_slug(coin, tf)
+    if slug is None:
+        return None, None
+    try:
+        data = requests.get(config.PM_GAMMA, params={"slug": slug, "limit": 1}, timeout=5).json()
+        if not data or data[0].get("ticker") != slug:
+            return None, None
+        ids = json.loads(data[0]["markets"][0]["clobTokenIds"])
+        print(f"  [PM scheduler] next contract pre-fetched: {ids[0][:24]}…")
+        return ids[0], ids[1]
+    except Exception as e:
+        print(f"  [PM scheduler] prefetch failed ({slug}): {e}")
+        return None, None
+
+
+def apply_new_pm_tokens(state: State, new_up: str, new_dn: str):
+    """Swap token IDs in state and signal pm_feed to reconnect."""
+    state.pm_up_id              = new_up
+    state.pm_dn_id              = new_dn
+    state.pm_up                 = None
+    state.pm_dn                 = None
+    state.last_pm_update        = time.time()
+    state.pm_price_frozen_count = 0
+    state.pm_needs_reconnect    = True
+    state.next_token_up         = None
+    state.next_token_dn         = None
+    state.next_token_prefetched = False
+    # reconnection_in_progress stays True until pm_feed establishes the new WS connection
+
+
 async def pm_feed(state: State):
     if not state.pm_up_id:
         print("  [PM] no tokens for this coin/timeframe – skipped")
         return
 
-    assets = [state.pm_up_id, state.pm_dn_id]
-
     while True:
+        # Always read from state so the watchdog can swap token IDs mid-run
+        assets = [state.pm_up_id, state.pm_dn_id]
         try:
             async with websockets.connect(
                 config.PM_WS,
@@ -224,10 +331,16 @@ async def pm_feed(state: State):
             ) as ws:
                 await ws.send(json.dumps({"assets_ids": assets, "type": "market"}))
                 print("  [PM] connected")
+                state.last_pm_update           = time.time()
+                state.pm_reconnecting          = False  # connection established
+                state.reconnection_in_progress = False  # guard released once WS is up
 
                 while True:
                     try:
-                        raw = json.loads(await ws.recv())
+                        # 5-second timeout so we can check pm_needs_reconnect
+                        # even when the market is quiet
+                        msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        raw = json.loads(msg)
 
                         if isinstance(raw, list):
                             for entry in raw:
@@ -238,8 +351,18 @@ async def pm_feed(state: State):
                                 if ch.get("best_ask"):
                                     _pm_set(ch["asset_id"], float(ch["best_ask"]), state)
 
+                    except asyncio.TimeoutError:
+                        pass  # expected on quiet markets; fall through to flag check
+
                     except websockets.exceptions.ConnectionClosed:
                         print("  [PM] connection closed, reconnecting...")
+                        break
+
+                    # Watchdog requested a contract switch — break to outer loop
+                    # which will re-read state.pm_up_id / state.pm_dn_id
+                    if state.pm_needs_reconnect:
+                        state.pm_needs_reconnect = False
+                        print("  [PM] switching to new contract...")
                         break
 
         except Exception as e:
@@ -255,5 +378,37 @@ def _pm_apply(asset, asks, state):
 def _pm_set(asset, price, state):
     if asset == state.pm_up_id:
         state.pm_up = price
+        state.last_pm_update = time.time()
     elif asset == state.pm_dn_id:
         state.pm_dn = price
+        state.last_pm_update = time.time()
+
+
+def is_market_stale(state: State) -> tuple[bool, str]:
+    """Return (is_stale, trigger) where trigger is 'timeout' or 'price_frozen'.
+
+    Only meaningful once at least one PM message has been received
+    (last_pm_update > 0).  Mutates pm_price_frozen_count as a side-effect.
+    """
+    # Never report stale while a reconnection is already in progress
+    if state.reconnection_in_progress:
+        state.pm_price_frozen_count = 0
+        return False, ""
+
+    if state.last_pm_update == 0.0:
+        return False, ""
+
+    # Condition A — no WebSocket messages for 30 s
+    if time.time() - state.last_pm_update > 30:
+        return True, "timeout"
+
+    # Condition B — price pinned at resolution level for 10+ watchdog ticks
+    if state.pm_up is not None:
+        if state.pm_up >= 0.98 or state.pm_up <= 0.02:
+            state.pm_price_frozen_count += 1
+        else:
+            state.pm_price_frozen_count = 0
+        if state.pm_price_frozen_count >= 10:
+            return True, "price_frozen"
+
+    return False, ""

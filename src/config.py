@@ -68,6 +68,41 @@ BIAS_WEIGHTS = {
 }
 # sum of all weights = 56; bias = (raw_sum / 56) * 100, clamped to ±100
 
+# ── Polymarket token IDs for live trading ──────────────────────
+# Kept in sync at runtime by data_loop (from feeds.State).
+# To pre-fill static IDs: call ClobClient.get_markets() and paste
+# the clobTokenIds for each coin/timeframe pair.
+POLYMARKET_TOKEN_IDS: dict = {
+    "ETH": {
+        "5m":    {"UP": "", "DOWN": ""},
+        "15m":   {"UP": "", "DOWN": ""},
+        "1h":    {"UP": "", "DOWN": ""},
+        "4h":    {"UP": "", "DOWN": ""},
+        "daily": {"UP": "", "DOWN": ""},
+    },
+    "BTC": {
+        "5m":    {"UP": "", "DOWN": ""},
+        "15m":   {"UP": "", "DOWN": ""},
+        "1h":    {"UP": "", "DOWN": ""},
+        "4h":    {"UP": "", "DOWN": ""},
+        "daily": {"UP": "", "DOWN": ""},
+    },
+    "SOL": {
+        "5m":    {"UP": "", "DOWN": ""},
+        "15m":   {"UP": "", "DOWN": ""},
+        "1h":    {"UP": "", "DOWN": ""},
+        "4h":    {"UP": "", "DOWN": ""},
+        "daily": {"UP": "", "DOWN": ""},
+    },
+    "XRP": {
+        "5m":    {"UP": "", "DOWN": ""},
+        "15m":   {"UP": "", "DOWN": ""},
+        "1h":    {"UP": "", "DOWN": ""},
+        "4h":    {"UP": "", "DOWN": ""},
+        "daily": {"UP": "", "DOWN": ""},
+    },
+}
+
 # ── Dashboard ──────────────────────────────────────────────────
 HA_COUNT   = 8          # Heikin Ashi candles shown
 VP_BINS    = 30         # volume profile price buckets

@@ -115,10 +115,18 @@ class PaperTrader:
         cl        = signal["conviction_level"]
         direction = "LONG" if cl == "MAX_BULLISH" else "SHORT"
 
+        if cl == "MAX_BULLISH":
+            direction      = "LONG"
+            detected_price = pm_up_price
+        else:
+            direction      = "SHORT"
+            detected_price = 1.0 - pm_up_price
+
+
         # ── 1. Price-range guard ─────────────────────────────────
-        if direction == "LONG" and not (0.40 <= pm_up_price <= 0.80):
+        if direction == "LONG" and not (0.55 <= detected_price <= 0.75):
             return None
-        if direction == "SHORT" and not (0.20 <= pm_up_price <= 0.60):
+        if direction == "SHORT" and not (0.30 <= detected_price <= 0.70):
             return None
 
         # ── 2. Cooldown guard ────────────────────────────────────
@@ -218,9 +226,11 @@ class PaperTrader:
             4. WIN_FULL  — contract resolved to $1.00 (price >= 0.95)
             5. LOSS_FULL — contract resolved to $0.00 (price <= 0.05)
         """
-        # ── tick guard ───────────────────────────────────────────
+        # ── time-based guard — wait at least 5s after open before evaluating TP/SL
         position["ticks_open"] = position.get("ticks_open", 0) + 1
-        if position["ticks_open"] < 3:
+        ts_open      = datetime.fromisoformat(position["timestamp_open"])
+        seconds_open = (datetime.now(timezone.utc) - ts_open).total_seconds()
+        if seconds_open < 5:
             return position
 
         direction   = position["direction"]

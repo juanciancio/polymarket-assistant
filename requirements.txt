@@ -1,3 +1,7 @@
 requests>=2.32.5
 websockets>=16.0
 rich>=14.3.2
+
+# Live trading (optional — set LIVE_TRADING=true in .env to activate)
+py-clob-client
+python-dotenv

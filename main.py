@@ -3,6 +3,7 @@ import os
 import asyncio
 import hashlib
 import json
+import random
 import time
 from datetime import datetime, timezone
 
@@ -21,11 +22,13 @@ import dashboard
 import indicators as ind
 import scoring
 import paper_trading
+import live_trader as lt
 
 console = Console(force_terminal=True)
 
 SIGNALS_LOG       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals_log.json")
 PAPER_TRADES_LOG  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_trades.json")
+LIVE_TRADES_LOG   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_trades.json")
 RECONNECTION_LOG  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reconnection_log.json")
 
 TREND_THRESH  = 3
@@ -73,6 +76,7 @@ def _make_ds(coin: str, tf: str) -> dict:
         # Pre-computed indicators
         "obi": 0.0,
         "cvd_windows": {},
+        "cvd_3m": 0.0,
         "delta_1m": 0.0,
         "rsi": None,
         "macd_v": None, "macd_sig": None, "macd_hist": None,
@@ -148,18 +152,22 @@ async def pm_watchdog(state: feeds.State, coin: str, tf: str):
                 print(f"  [PM watchdog] fetch error: {exc}")
 
         if new_up and new_dn:
-            _append_reconnect_log({
+            asyncio.ensure_future(asyncio.to_thread(_append_reconnect_log, {
                 "timestamp":    datetime.now(timezone.utc).isoformat(),
                 "coin":         coin,
                 "timeframe":    tf,
                 "old_token_id": old_up_id or "",
                 "new_token_id": new_up,
                 "trigger":      trigger,
-            })
+            }))
             feeds.apply_new_pm_tokens(state, new_up, new_dn)
             state.market_end_time = new_end
-            state.pm_reconnecting = False
             print(f"  [PM watchdog] new contract acquired — {new_up[:24]}…")
+            jitter = random.uniform(0, 3)
+            wait   = 12 + jitter
+            print(f"  [PM watchdog] waiting {wait:.1f}s before reconnect to avoid rate limit…")
+            await asyncio.sleep(wait)
+            state.pm_reconnecting = False
         else:
             state.pm_reconnecting          = False
             state.reconnection_in_progress = False
@@ -182,6 +190,9 @@ async def pm_scheduler(state: feeds.State, coin: str, tf: str):
         secs_left = (state.market_end_time - now).total_seconds()
 
         if 0 < secs_left <= 30 and not state.next_token_prefetched:
+            # Skip prefetch if watchdog is already reconnecting
+            if state.reconnection_in_progress or state.pm_reconnecting:
+                continue
             state.next_token_prefetched = True
             up, dn = await feeds.prefetch_next_pm_tokens_async(coin, tf)
             if up:
@@ -211,14 +222,14 @@ async def pm_scheduler(state: feeds.State, coin: str, tf: str):
 
             if new_up and new_dn and new_up != state.pm_up_id:
                 old_up = state.pm_up_id
-                _append_reconnect_log({
+                asyncio.ensure_future(asyncio.to_thread(_append_reconnect_log, {
                     "timestamp":    datetime.now(timezone.utc).isoformat(),
                     "coin":         coin,
                     "timeframe":    tf,
                     "old_token_id": old_up or "",
                     "new_token_id": new_up,
                     "trigger":      "scheduled",
-                })
+                }))
                 feeds.apply_new_pm_tokens(state, new_up, new_dn)
                 print(f"  [PM scheduler] proactive switch done — {new_up[:24]}…")
             else:
@@ -227,7 +238,8 @@ async def pm_scheduler(state: feeds.State, coin: str, tf: str):
 
 
 async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
-                    trader: paper_trading.PaperTrader):
+                    trader: paper_trading.PaperTrader,
+                    live: "lt.LiveTrader"):
     """Compute all indicators at ~5 Hz and handle paper trading business logic.
 
     Writes pre-computed values to `ds` so render_loop can read them without
@@ -259,6 +271,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
         # ── Compute every indicator exactly once ─────────────────────────
         ds["obi"]       = ind.obi(bids, asks, mid)
         ds["cvd_windows"] = {s: ind.cvd(trades, s) for s in config.CVD_WINDOWS}
+        ds["cvd_3m"]    = ind.cvd(trades, 180)
         ds["delta_1m"]  = ind.cvd(trades, config.DELTA_WINDOW)
         ds["rsi"]       = ind.rsi(klines)
         macd_v, sig_v, hv = ind.macd(klines)
@@ -314,7 +327,16 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
             ds["trend_score"], ds["trend_label"], ds["trend_col"] = t_score, "NEUTRAL", "yellow"
 
         # ── Entry score & divergence ─────────────────────────────────────
-        entry      = scoring.calculate_entry_score(state)
+        entry = scoring.calculate_entry_score(state, precomputed={
+            "bias":  ds["bias"],
+            "cvd5":  ds["cvd_windows"].get(300, 0),
+            "cvd3":  ds["cvd_3m"],
+            "vwap":  ds["vwap"],
+            "obi":   ds["obi"],
+            "ema_s": ds["ema_s"],
+            "ema_l": ds["ema_l"],
+            "ha":    ds["ha"],
+        })
         divergence = scoring.detect_divergence(state.pm_up, entry["score"])
         divergence["pm_up_price"] = state.pm_up
         ds["entry"]     = entry
@@ -339,7 +361,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
                     f"[/bold bright_red on dark_red]\n"
                 )
             print("\a", end="", flush=True)
-            _append_signal_log({
+            asyncio.ensure_future(asyncio.to_thread(_append_signal_log, {
                 "timestamp":        ts,
                 "coin":             coin,
                 "timeframe":        tf,
@@ -351,7 +373,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
                 "pm_up_price":      divergence.get("pm_up_price"),
                 "conviction_level": cl,
                 "has_divergence":   divergence["has_divergence"],
-            })
+            }))
 
         # ── Open paper position on MAX_CONVICTION ────────────────────────
         if (cl in ("MAX_BULLISH", "MAX_BEARISH")
@@ -395,11 +417,53 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
                 if status in _TRADE_MSGS:
                     ds["pending_alerts"].append(_TRADE_MSGS[status])
 
+        # ── Live trading: open on MAX_CONVICTION ─────────────────────────
+        if (cl in ("MAX_BULLISH", "MAX_BEARISH")
+                and live.current_open_position is None
+                and state.pm_up is not None):
+            signal = {
+                "conviction_level":     cl,
+                "score":                entry["score"],
+                "triggered_conditions": entry["triggered_conditions"],
+            }
+            print(f"[DEBUG] Signal detectado: conviction={cl} coin={coin} tf={tf}")
+            try:
+                print(f"[DEBUG] Llamando execute_signal...")
+                live_pos = await live.execute_signal(
+                    signal, coin, tf,
+                    state.pm_up, mid,
+                    entry["triggered_conditions"],
+                    state,
+                )
+                print(f"[DEBUG] execute_signal retornó: {'posición abierta' if live_pos is not None else 'None'}")
+                if live_pos is not None:
+                    slip_pct = live_pos.get("slippage_applied", 0) * 100
+                    ds["pending_alerts"].append(
+                        f"[bold red]🔴 LIVE TRADE ABIERTO #{live_pos['id']}: "
+                        f"{live_pos['direction']}  fill: {live_pos['entry_price_real']:.4f}  "
+                        f"slip: {slip_pct:+.2f}%[/bold red]"
+                    )
+            except Exception as e:
+                print(f"[DEBUG] execute_signal EXCEPCIÓN: {e}")
+                live._log_error("data_loop.execute_signal", e)
+
+        # ── Live trading: check close ─────────────────────────────────────
+        live_open = live.current_open_position
+        if live_open is not None and state.pm_up is not None:
+            try:
+                await live.check_and_close(state.pm_up, mid)
+            except Exception as e:
+                live._log_error("data_loop.check_and_close", e)
+
         prev_conviction = cl
         ds["ready"] = True
 
 
-async def render_loop(ds: dict, trader: paper_trading.PaperTrader):
+async def render_loop(
+    ds: dict,
+    trader: paper_trading.PaperTrader,
+    live_trader: "lt.LiveTrader",
+):
     """Render the dashboard at 30fps using a persistent Live context.
 
     Reads only from the pre-computed `ds` dict — no indicator calculations here.
@@ -419,7 +483,7 @@ async def render_loop(ds: dict, trader: paper_trading.PaperTrader):
             if ds["ready"]:
                 new_hash = _ds_hash(ds)
                 if new_hash != last_hash:
-                    live.update(dashboard.render(ds, trader))
+                    live.update(dashboard.render(ds, trader, live_trader))
                     last_hash = new_hash
 
             await asyncio.sleep(RENDER_SLEEP)
@@ -441,6 +505,16 @@ async def main():
         f"P&L: {'+'if s['total_pnl']>=0 else ''}${s['total_pnl']:.2f}\n"
     )
 
+    live_trader_inst = lt.LiveTrader(LIVE_TRADES_LOG)
+    if live_trader_inst.live_trading:
+        ok = live_trader_inst.verify_connection()
+        if not ok:
+            console.print(
+                "  [yellow][LiveTrader] connection failed — live trading disabled[/yellow]"
+            )
+    else:
+        console.print("  [dim][LiveTrader] LIVE_TRADING=false — paper-only mode[/dim]")
+
     state = feeds.State()
     state.pm_up_id, state.pm_dn_id, state.market_end_time = feeds.fetch_pm_tokens_full(coin, tf)
     if state.pm_up_id:
@@ -461,11 +535,11 @@ async def main():
     await asyncio.gather(
         feeds.ob_poller(binance_sym, state),
         feeds.binance_feed(binance_sym, kline_iv, state),
-        feeds.pm_feed(state),
+        feeds.pm_feed(state, live_trader_inst),
         pm_watchdog(state, coin, tf),
         pm_scheduler(state, coin, tf),
-        data_loop(state, ds, coin, tf, trader),
-        render_loop(ds, trader),
+        data_loop(state, ds, coin, tf, trader, live_trader_inst),
+        render_loop(ds, trader, live_trader_inst),
     )
 
 

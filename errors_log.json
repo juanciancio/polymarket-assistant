@@ -1,0 +1,4 @@
+{"timestamp": "2026-03-13T16:06:46.544791+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-13T16:07:06.920354+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-13T17:25:55.452155+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-13T17:26:27.680333+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}

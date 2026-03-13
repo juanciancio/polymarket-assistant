@@ -433,7 +433,142 @@ def _paper_panel(trader: "pt.PaperTrader", ds: dict) -> Panel:
     return Panel(t, title="PAPER TRADING", box=bx.ROUNDED, expand=True)
 
 
-def render(ds: dict, trader: "pt.PaperTrader | None" = None) -> "_Group":
+def _live_panel(live_trader, ds: dict) -> Panel:
+    """Live trading status panel. live_trader is a LiveTrader instance."""
+    s = live_trader.summary
+
+    if not live_trader.live_trading:
+        return Panel(
+            "[dim]⚪ Live trading desactivado — activar LIVE_TRADING=true en .env[/dim]",
+            title="LIVE TRADING",
+            box=bx.ROUNDED,
+            expand=True,
+        )
+
+    t = Table(box=None, show_header=False, pad_edge=False, expand=True)
+    t.add_column("label", style="dim", width=22)
+    t.add_column("value",              width=40)
+
+    t.add_row("", "[bold red]🔴 LIVE MODE ACTIVO — Capital real[/bold red]")
+
+    wr     = s["win_rate"]
+    wr_col = "green" if wr >= 65 else "yellow" if wr >= 55 else "red"
+    t.add_row(
+        "Trades / W / L",
+        f"{s['total_trades']}  │  [green]W: {s['wins']}[/green]  │  [red]L: {s['losses']}[/red]  │  "
+        f"[{wr_col} bold]Win Rate: {wr:.1f}%[/{wr_col} bold]",
+    )
+
+    pnl     = s["total_pnl_usd"]
+    pnl_col = "green" if pnl >= 0 else "red"
+    dpnl    = live_trader.daily_pnl
+    dp_col  = "green" if dpnl >= 0 else "red"
+    avail   = live_trader.daily_loss_limit + dpnl
+    t.add_row(
+        "P&L Total / Diario",
+        f"[{pnl_col}]{'+' if pnl >= 0 else ''}${pnl:.2f}[/{pnl_col}]"
+        f"  │  [{dp_col}]{'+' if dpnl >= 0 else ''}${dpnl:.2f} hoy[/{dp_col}]",
+    )
+    t.add_row(
+        "Daily Loss Limit",
+        f"${live_trader.daily_loss_limit:.2f}  │  Disponible: ${avail:.2f}",
+    )
+
+    slip_pct = s["avg_slippage"] * 100
+    t.add_row(
+        "Avg Slippage / FOK cancel",
+        f"{slip_pct:.2f}%  │  {s.get('fok_canceled_count', 0)} cancelados",
+    )
+
+    # ── Special banners ──────────────────────────────────────────────────
+    if live_trader.daily_pnl <= -live_trader.daily_loss_limit:
+        t.add_row("", "[bold red]🚨 DAILY LOSS LIMIT — Trading detenido[/bold red]")
+
+    # CLOSE_FAILED alert — show token and capital at risk for recent failures
+    _now = datetime.now(_tz.utc)
+    _recent_cf = [
+        p for p in live_trader._data.get("positions", [])
+        if p.get("status") == "CLOSE_FAILED"
+        and p.get("timestamp_close")
+        and (_now - datetime.fromisoformat(p["timestamp_close"])).total_seconds() < 600
+    ]
+    if _recent_cf:
+        for _cf in _recent_cf:
+            _tid  = _cf.get("token_id", "")[:16]
+            _cap  = _cf.get("capital", 0)
+            t.add_row(
+                "",
+                f"[bold red]⚠️  CLOSE_FAILED — posición sin cerrar en Polymarket[/bold red]",
+            )
+            t.add_row(
+                "",
+                f"[bold red]   Token: {_tid}...  │  Capital en riesgo: ${_cap:.2f}[/bold red]",
+            )
+            t.add_row(
+                "",
+                "[bold red]   Verificar manualmente en polymarket.com[/bold red]",
+            )
+    elif live_trader.has_close_failed:
+        t.add_row(
+            "",
+            "[bold yellow]⚠️  Cierre fallido anterior — revisar live_trades.json[/bold yellow]",
+        )
+
+    # ── Open position or idle ────────────────────────────────────────────
+    pm_up    = ds.get("pm_up")
+    open_pos = live_trader.current_open_position
+
+    if open_pos:
+        direction = open_pos["direction"]
+        d_col     = "green" if direction == "LONG" else "red"
+        coin_tf   = f"{open_pos['coin']} {open_pos['timeframe']}"
+        e_det     = open_pos["entry_price_detected"]
+        e_real    = open_pos["entry_price_real"]
+        slip_pct2 = open_pos.get("slippage_applied", 0) * 100
+        tp        = open_pos["tp_target"]
+        sl        = open_pos["sl_target"]
+        highest   = open_pos.get("highest_price", e_real)
+
+        t.add_row("", "")
+        t.add_row(
+            "POSICIÓN ABIERTA",
+            f"[{d_col} bold]{direction}[/{d_col} bold]  {coin_tf}",
+        )
+        t.add_row(
+            "Detectado / Fill / Slip",
+            f"${e_det:.4f}  │  ${e_real:.4f}  │  {slip_pct2:+.2f}%",
+        )
+        trail_str = ""
+        if highest >= 0.75:
+            trail_stop = round(highest - 0.12, 3)
+            trail_str  = f"  │  [yellow]Trail activo: ${trail_stop:.3f}[/yellow]"
+        t.add_row(
+            "TP / SL",
+            f"[green]TP: ${tp:.3f}[/green]  │  [red]SL: ${sl:.3f}[/red]{trail_str}",
+        )
+
+        if pm_up is not None:
+            cur_contract = pm_up if direction == "LONG" else 1.0 - pm_up
+            upnl         = live_trader.unrealized_pnl(pm_up)
+            u_col        = "green" if (upnl or 0) >= 0 else "red"
+            arrow        = "↑" if (upnl or 0) >= 0 else "↓"
+            upnl_s       = f"{'+' if (upnl or 0) >= 0 else ''}${upnl:.2f}" if upnl is not None else "—"
+            t.add_row(
+                "Actual / P&L flotante",
+                f"${cur_contract:.4f}  │  [{u_col} bold]{upnl_s} {arrow}[/{u_col} bold]",
+            )
+    else:
+        t.add_row("", "")
+        t.add_row("Estado", "[dim]Sin posición abierta — esperando señal[/dim]")
+
+    return Panel(t, title="LIVE TRADING", box=bx.ROUNDED, expand=True)
+
+
+def render(
+    ds: dict,
+    trader: "pt.PaperTrader | None" = None,
+    live_trader=None,
+) -> "_Group":
     """Build the full dashboard layout from pre-computed state dict."""
     header = _header(ds)
 
@@ -448,5 +583,7 @@ def render(ds: dict, trader: "pt.PaperTrader | None" = None) -> "_Group":
     panels: list = [header, grid, _signals_panel(ds)]
     if trader is not None:
         panels.append(_paper_panel(trader, ds))
+    if live_trader is not None:
+        panels.append(_live_panel(live_trader, ds))
 
     return _Group(*panels)

@@ -51,7 +51,7 @@ def detect_divergence(pm_up_price: float | None, score: int) -> dict:
     return _neutral
 
 
-def calculate_entry_score(state) -> dict:
+def calculate_entry_score(state, precomputed: dict | None = None) -> dict:
     """Evaluate current market conditions and return an entry scoring result.
 
     LONG  entry requires score >= +5  (raised from +4 to filter weak entries).
@@ -83,13 +83,23 @@ def calculate_entry_score(state) -> dict:
     score     = 0
     triggered = []
 
-    bias   = ind.bias_score(bids, asks, mid, trades, klines)  # [-100, +100]
-    cvd5   = ind.cvd(trades, 300)
-    cvd3   = ind.cvd(trades, 180)
-    vwap_v = ind.vwap(klines)
-    obi_v  = ind.obi(bids, asks, mid)                         # [-1, +1]
-    ema_s, ema_l = ind.emas(klines)
-    ha     = ind.heikin_ashi(klines)
+    if precomputed is not None:
+        bias   = precomputed["bias"]
+        cvd5   = precomputed["cvd5"]
+        cvd3   = precomputed["cvd3"]
+        vwap_v = precomputed["vwap"]
+        obi_v  = precomputed["obi"]
+        ema_s  = precomputed["ema_s"]
+        ema_l  = precomputed["ema_l"]
+        ha     = precomputed["ha"]
+    else:
+        bias   = ind.bias_score(bids, asks, mid, trades, klines)  # [-100, +100]
+        cvd5   = ind.cvd(trades, 300)
+        cvd3   = ind.cvd(trades, 180)
+        vwap_v = ind.vwap(klines)
+        obi_v  = ind.obi(bids, asks, mid)                         # [-1, +1]
+        ema_s, ema_l = ind.emas(klines)
+        ha     = ind.heikin_ashi(klines)
 
     # ── BULLISH conditions ───────────────────────────────────────
     if bias > 65:

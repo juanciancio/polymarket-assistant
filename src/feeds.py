@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import time
 
 import requests
@@ -118,10 +119,12 @@ async def binance_feed(symbol: str, kline_iv: str, state: State):
 
 
 async def bootstrap(symbol: str, interval: str, state: State):
-    resp = requests.get(
-        f"{config.BINANCE_REST}/klines",
-        params={"symbol": symbol, "interval": interval, "limit": config.KLINE_BOOT},
-    ).json()
+    resp = await asyncio.to_thread(
+        lambda: requests.get(
+            f"{config.BINANCE_REST}/klines",
+            params={"symbol": symbol, "interval": interval, "limit": config.KLINE_BOOT},
+        ).json()
+    )
     state.klines = [
         {
             "t": r[0] / 1e3,
@@ -314,7 +317,7 @@ def apply_new_pm_tokens(state: State, new_up: str, new_dn: str):
     # reconnection_in_progress stays True until pm_feed establishes the new WS connection
 
 
-async def pm_feed(state: State):
+async def pm_feed(state: State, live_trader=None):
     if not state.pm_up_id:
         print("  [PM] no tokens for this coin/timeframe – skipped")
         return
@@ -322,6 +325,16 @@ async def pm_feed(state: State):
     while True:
         # Always read from state so the watchdog can swap token IDs mid-run
         assets = [state.pm_up_id, state.pm_dn_id]
+
+        # CLOB cooldown: Polymarket rate-limits WS handshakes and CLOB HTTP
+        # requests from the same IP bucket. Wait if a trade just happened.
+        if live_trader is not None:
+            clob_age = time.time() - live_trader.last_clob_call
+            if clob_age < 8.0:
+                wait = 8.0 - clob_age
+                print(f"  [PM] CLOB cooldown — waiting {wait:.1f}s before WS connect…")
+                await asyncio.sleep(wait)
+
         try:
             async with websockets.connect(
                 config.PM_WS,
@@ -366,8 +379,14 @@ async def pm_feed(state: State):
                         break
 
         except Exception as e:
-            print(f"  [PM] connection error: {e}, reconnecting in 5s...")
-            await asyncio.sleep(5)
+            err_str = str(e).lower()
+            if "timed out" in err_str or "handshake" in err_str:
+                backoff = random.uniform(15, 25)
+                print(f"  [PM] connection timeout — backing off {backoff:.1f}s...")
+                await asyncio.sleep(backoff)
+            else:
+                print(f"  [PM] connection error: {e}, reconnecting in 5s...")
+                await asyncio.sleep(5)
 
 
 def _pm_apply(asset, asks, state):
@@ -409,6 +428,15 @@ def is_market_stale(state: State) -> tuple[bool, str]:
         else:
             state.pm_price_frozen_count = 0
         if state.pm_price_frozen_count >= 10:
-            return True, "price_frozen"
+            # Only report stale if the contract is confirmed expired,
+            # or if we have no end-time info. While still within the
+            # active window, a price near 0/1 is normal resolution
+            # behavior — the proactive scheduler handles the switch.
+            if state.market_end_time is None:
+                return True, "price_frozen"
+            if datetime.now(timezone.utc) >= state.market_end_time:
+                return True, "price_frozen"
+            # Contract still active — reset counter, let scheduler handle it
+            state.pm_price_frozen_count = 0
 
     return False, ""

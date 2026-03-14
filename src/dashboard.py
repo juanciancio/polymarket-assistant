@@ -246,6 +246,30 @@ def _ta_panel(ds: dict) -> Panel:
         hs   = "trend ↑" if green_tail >= 2 else "trend ↓"
         t.add_row("Heikin Ashi", dots, f"[{hc}]{hs}[/{hc}]")
 
+    vol = ds.get("volatility", -1.0)
+    if vol < 0:
+        t.add_row("Volatility 60s", "[dim]—[/dim]", "[dim]sin datos[/dim]")
+    elif vol < 0.10:
+        t.add_row("Volatility 60s",
+                  f"[bold magenta]{vol:.3f}%[/bold magenta]",
+                  "[bold magenta]ULTRA ESTABLE[/bold magenta]")
+    elif vol < 0.20:
+        t.add_row("Volatility 60s",
+                  f"[bold green]{vol:.3f}%[/bold green]",
+                  "[bold green]MUY ESTABLE[/bold green]")
+    elif vol < 0.30:
+        t.add_row("Volatility 60s",
+                  f"[green]{vol:.3f}%[/green]",
+                  "[green]ESTABLE[/green]")
+    elif vol < 0.50:
+        t.add_row("Volatility 60s",
+                  f"[yellow]{vol:.3f}%[/yellow]",
+                  "[yellow]NORMAL[/yellow]")
+    else:
+        t.add_row("Volatility 60s",
+                  f"[red]{vol:.3f}%[/red]",
+                  "[red]VOLÁTIL[/red]")
+
     return Panel(t, title="TECHNICAL", box=bx.ROUNDED, expand=True)
 
 

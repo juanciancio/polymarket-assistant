@@ -129,36 +129,55 @@ def emas(klines):
     )
 
 
-def bias_score(bids, asks, mid, trades, klines) -> float:
+def bias_score(bids, asks, mid, trades, klines,
+               precomputed: dict | None = None) -> float:
     """Return a bias score in [-100, +100].
     Positive = bullish signal, negative = bearish signal.
     Uses weighted sum of all key indicators, normalised to max possible weight.
+    When precomputed dict is provided, skips all internal indicator calls.
     """
     W  = config.BIAS_WEIGHTS
     total = 0.0
 
+    if precomputed is not None:
+        es, el = precomputed.get("ema_s"), precomputed.get("ema_l")
+        obi_v  = precomputed.get("obi", 0.0)
+        hv     = precomputed.get("macd_hist")
+        cvd5   = precomputed.get("cvd5", 0)
+        ha     = precomputed.get("ha", [])
+        vwap_v = precomputed.get("vwap")
+        rsi_v  = precomputed.get("rsi")
+        poc    = precomputed.get("poc", 0.0)
+        bw     = precomputed.get("walls_buy", [])
+        aw     = precomputed.get("walls_sell", [])
+    else:
+        es, el   = emas(klines)
+        obi_v    = obi(bids, asks, mid)
+        _, _, hv = macd(klines)
+        cvd5     = cvd(trades, 300)
+        ha       = heikin_ashi(klines)
+        vwap_v   = vwap(klines)
+        rsi_v    = rsi(klines)
+        poc, _   = vol_profile(klines)
+        bw, aw   = walls(bids, asks)
+
     # ── EMA cross ───────────────────────────────────────────────
-    es, el = emas(klines)
     if es is not None and el is not None:
         total += W["ema"] if es > el else -W["ema"]
 
     # ── OBI (linear –1..+1 → –W..+W) ───────────────────────────
     if mid:
-        obi_v = obi(bids, asks, mid)       # –1..+1
         total += obi_v * W["obi"]
 
     # ── MACD histogram sign ──────────────────────────────────────
-    _, _, hv = macd(klines)
     if hv is not None:
         total += W["macd"] if hv > 0 else -W["macd"]
 
     # ── CVD 5m sign ─────────────────────────────────────────────
-    cvd5 = cvd(trades, 300)
     if cvd5 != 0:
         total += W["cvd"] if cvd5 > 0 else -W["cvd"]
 
     # ── Heikin-Ashi streak (last 3 candles, 2 pts each) ─────────
-    ha = heikin_ashi(klines)
     if ha:
         streak = 0
         for c in reversed(ha[-3:]):
@@ -176,12 +195,10 @@ def bias_score(bids, asks, mid, trades, klines) -> float:
         total += max(-W["ha"], min(W["ha"], streak * (W["ha"] / 3)))
 
     # ── Price vs VWAP ────────────────────────────────────────────
-    vwap_v = vwap(klines)
     if vwap_v and mid:
         total += W["vwap"] if mid > vwap_v else -W["vwap"]
 
     # ── RSI overbought / oversold (linear mapping) ───────────────
-    rsi_v = rsi(klines)
     if rsi_v is not None:
         if rsi_v <= 30:
             total += W["rsi"]
@@ -193,12 +210,10 @@ def bias_score(bids, asks, mid, trades, klines) -> float:
             total -= W["rsi"] * (rsi_v - 50) / 20     # 50→0, 70→–W
 
     # ── Price vs POC ─────────────────────────────────────────────
-    poc, _ = vol_profile(klines)
     if poc and mid:
         total += W["poc"] if mid > poc else -W["poc"]
 
     # ── Walls (bid walls bullish, ask walls bearish) ─────────────
-    bw, aw = walls(bids, asks)
     wall_pts = (min(len(bw), 2) - min(len(aw), 2)) * 2   # ±0/2/4
     total += max(-W["walls"], min(W["walls"], wall_pts))
 

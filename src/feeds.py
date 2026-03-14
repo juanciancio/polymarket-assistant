@@ -330,8 +330,8 @@ async def pm_feed(state: State, live_trader=None):
         # requests from the same IP bucket. Wait if a trade just happened.
         if live_trader is not None:
             clob_age = time.time() - live_trader.last_clob_call
-            if clob_age < 8.0:
-                wait = 8.0 - clob_age
+            if clob_age < 4.0:
+                wait = 4.0 - clob_age
                 print(f"  [PM] CLOB cooldown — waiting {wait:.1f}s before WS connect…")
                 await asyncio.sleep(wait)
 

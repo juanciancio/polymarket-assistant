@@ -17,10 +17,27 @@ Environment variables (from .env):
 import asyncio
 import os
 import json
-from datetime import datetime, timezone
 import time
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
+
+
+def calc_volatility(trades: list, mid: float) -> float:
+    """Price range % over last 60 seconds of trades.
+    Returns -1.0 if insufficient data."""
+    try:
+        now    = time.time()
+        recent = [t for t in trades if t["t"] >= now - 60]
+        if len(recent) < 5:
+            return -1.0
+        prices = [t["price"] for t in recent]
+        m      = (max(prices) + min(prices)) / 2
+        if m == 0:
+            return -1.0
+        return (max(prices) - min(prices)) / m * 100
+    except Exception:
+        return -1.0
 
 load_dotenv()
 
@@ -40,9 +57,9 @@ _MAX_POSITION_HARDCAP = 50.0
 _SLIPPAGE_HARDCAP     = 0.05
 
 # ── Timing mirrors (must match paper_trading.py) ─────────────────────────────
-_COOLDOWN_SECS = 45
+_COOLDOWN_SECS = 10
 _BURST_WINDOW  = 300
-_BURST_MAX     = 3
+_BURST_MAX     = 5
 
 WIN_STATUSES    = {"WIN_TP", "WIN_FULL", "WIN_TRAIL"}
 LOSS_STATUSES   = {"LOSS_SL", "LOSS_FULL"}
@@ -73,11 +90,17 @@ class LiveTrader:
         self.last_close_timestamp: datetime | None = None
         self.recent_trades: list[datetime]     = []
         self.last_clob_call: float             = 0.0  # epoch of last CLOB HTTP request
+        self._opening_position: bool           = False  # guard against concurrent opens
 
         # ── Persistent data ─────────────────────────────────────────────
         self._file = filepath
         self._data = self._load()
         self._data["summary"]["daily_loss_limit"] = self.daily_loss_limit
+
+        # O(1) open-position cache — must be after _data is loaded
+        self._open_position: dict | None = next(
+            (p for p in self._data["positions"] if p["status"] == "OPEN"), None
+        )
 
         # Recover today's P&L from existing records
         today = datetime.now(timezone.utc).date()
@@ -179,10 +202,8 @@ class LiveTrader:
 
     @property
     def current_open_position(self) -> dict | None:
-        for p in self._data["positions"]:
-            if p["status"] == "OPEN":
-                return p
-        return None
+        """Return the single OPEN position, or None. O(1) — cache updated on open/close."""
+        return self._open_position
 
     @property
     def cooldown_remaining(self) -> int:
@@ -233,6 +254,7 @@ class LiveTrader:
         try:
             mo     = MarketOrderArgs(token_id=token_id, amount=amount_usd, side=BUY)
             signed = await asyncio.to_thread(self.client.create_market_order, mo)
+            await asyncio.sleep(0)   # yield to event loop between CPU-bound calls
             resp   = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)
             self.last_clob_call = time.time()
             print(f"[LiveTrader DEBUG] place_buy_order resp={resp}")
@@ -248,44 +270,23 @@ class LiveTrader:
             self._log_error("place_buy_order", str(e))
             return None
 
-    async def place_sell_order(self, token_id: str, contracts: float, current_price: float) -> dict | None:
-        """Try up to 4 times with decreasing contract amounts and progressive delays."""
-        attempts = [
-            (round(contracts * 0.99, 4), 0),   # attempt 1 — 99%, immediate
-            (round(contracts * 0.97, 4), 2),   # attempt 2 — 97%, wait 2s
-            (round(contracts * 0.95, 4), 3),   # attempt 3 — 95%, wait 3s
-            (round(contracts * 0.90, 4), 5),   # attempt 4 — 90%, wait 5s
-        ]
-        for attempt_num, (safe_contracts, delay) in enumerate(attempts, 1):
-            if delay > 0:
-                print(
-                    f"[LiveTrader] ⏳ reintento {attempt_num} en {delay}s "
-                    f"({safe_contracts:.4f} contratos)..."
-                )
-                await asyncio.sleep(delay)
-            try:
-                mo     = MarketOrderArgs(token_id=token_id, amount=safe_contracts, side=SELL)
-                signed = await asyncio.to_thread(self.client.create_market_order, mo)
-                resp   = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)
-                self.last_clob_call = time.time()
-                if resp.get("status") != "canceled" and resp.get("success"):
-                    print(f"[LiveTrader] ✅ venta ejecutada en intento {attempt_num}")
-                    return resp
-                print(f"[LiveTrader] ⚠️ intento {attempt_num} cancelado")
-            except Exception as e:
-                err = str(e)
-                if "couldn't be fully filled" in err or "not enough balance" in err:
-                    print(f"[LiveTrader] ⚠️ intento {attempt_num} sin liquidez")
-                    continue
-                self._log_error("place_sell_order", err)
-                break
-
-        self._log_error(
-            "place_sell_order",
-            f"CLOSE_FAILED después de {len(attempts)} intentos — "
-            f"contratos={contracts:.4f} token={token_id[:16]}",
-        )
-        return None
+    async def _try_sell_once(self, token_id: str, contracts: float) -> dict | None:
+        """Single sell attempt — no retries, no delays."""
+        try:
+            mo     = MarketOrderArgs(token_id=token_id, amount=contracts, side=SELL)
+            signed = await asyncio.to_thread(self.client.create_market_order, mo)
+            await asyncio.sleep(0)  # yield to event loop
+            resp   = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)
+            self.last_clob_call = time.time()
+            if resp.get("status") != "canceled" and resp.get("success"):
+                return resp
+            return None
+        except Exception as e:
+            err = str(e)
+            if "couldn't be fully filled" in err or "not enough balance" in err:
+                return None  # no liquidity — caller will retry
+            self._log_error("_try_sell_once", err)
+            return None
 
     async def execute_signal(
         self,
@@ -361,173 +362,268 @@ class LiveTrader:
                 print("[LiveTrader] ❌ bloqueado: LONG con Price below VWAP")
                 return None
 
-        # 8. Price range validation
-        if direction == "LONG" and not (0.55 <= detected_price <= 0.75):
-            print(f"[LiveTrader] ❌ bloqueado: LONG precio fuera de rango ({detected_price:.4f})")
-            return None
-        if direction == "SHORT" and not (0.30 <= detected_price <= 0.70):
-            print(f"[LiveTrader] ❌ bloqueado: SHORT precio fuera de rango ({detected_price:.4f})")
-            return None
+        # 7b. VWAP filter for SHORT
+        if direction == "SHORT":
+            vwap_against = any(
+                cond[0] == "Price above VWAP"
+                for cond in triggered_conditions
+            )
+            if vwap_against:
+                print("[LiveTrader] ❌ bloqueado: SHORT con Price above VWAP")
+                return None
 
-        # 9. Max price with slippage
+        # 8. Price range validation
+        if direction == "LONG":
+            volatility = self._recent_volatility(state)
+            if volatility >= 0 and volatility < 0.10:
+                long_upper = 0.85
+                vol_label  = f"ULTRA ESTABLE ({volatility:.3f}%)"
+            elif volatility >= 0 and volatility < 0.20:
+                long_upper = 0.78
+                vol_label  = f"MUY ESTABLE ({volatility:.3f}%)"
+            else:
+                long_upper = 0.75
+                vol_label  = f"NORMAL/VOLÁTIL ({volatility:.3f}%)"
+            print(f"[LiveTrader] volatilidad 60s: {vol_label} → límite LONG {long_upper}")
+            if not (0.55 <= detected_price <= long_upper):
+                print(
+                    f"[LiveTrader] ❌ bloqueado: LONG precio fuera de rango "
+                    f"({detected_price:.4f}, límite={long_upper})"
+                )
+                return None
+        if direction == "SHORT":
+            volatility = self._recent_volatility(state)
+            if volatility >= 0 and volatility < 0.10:
+                short_upper = 0.85
+                vol_label   = f"ULTRA ESTABLE ({volatility:.3f}%)"
+            elif volatility >= 0 and volatility < 0.20:
+                short_upper = 0.70
+                vol_label   = f"MUY ESTABLE ({volatility:.3f}%)"
+            else:
+                short_upper = 0.65
+                vol_label   = f"NORMAL/VOLÁTIL ({volatility:.3f}%)"
+            print(f"[LiveTrader] volatilidad 60s: {vol_label} → límite SHORT {short_upper}")
+            if not (0.35 <= detected_price <= short_upper):
+                print(
+                    f"[LiveTrader] ❌ bloqueado: SHORT precio fuera de rango "
+                    f"({detected_price:.4f}, límite={short_upper})"
+                )
+                return None
+
+        # 9. Adaptive position sizing based on volatility
+        _vol_for_sizing = volatility  # computed in step 8 for both LONG and SHORT
+
+        if _vol_for_sizing >= 0 and _vol_for_sizing < 0.10:
+            capital = round(self.max_position_size * 2.0, 2)
+            print(
+                f"[LiveTrader] 🚀 mercado ULTRA ESTABLE ({_vol_for_sizing:.3f}%) "
+                f"— capital máximo: ${capital:.2f}"
+            )
+        elif _vol_for_sizing >= 0 and _vol_for_sizing < 0.20:
+            capital = round(self.max_position_size * 1.5, 2)
+            print(
+                f"[LiveTrader] 📈 mercado MUY ESTABLE ({_vol_for_sizing:.3f}%) "
+                f"— capital aumentado: ${capital:.2f}"
+            )
+        else:
+            capital = self.max_position_size
+            print(
+                f"[LiveTrader] capital normal: ${capital:.2f} "
+                f"(volatilidad {_vol_for_sizing:.3f}%)"
+            )
+
+        # Max price with slippage
         max_price = round(detected_price * (1 + self.slippage_tolerance), 4)
         print(f"[LiveTrader] direction={direction} detected={detected_price:.4f} max={max_price:.4f}")
 
-        # 9b. Contract expiry guard — skip entry if < 90s remain
+        # 9b. Contract expiry guard — adaptive minimum based on volatility
         if state.market_end_time is not None:
             remaining = (state.market_end_time - datetime.now(timezone.utc)).total_seconds()
-            if remaining < 90:
+
+            if _vol_for_sizing >= 0 and _vol_for_sizing < 0.10:
+                min_secs = 30
+                vol_note = f"ULTRA ESTABLE ({_vol_for_sizing:.3f}%)"
+            elif _vol_for_sizing >= 0 and _vol_for_sizing < 0.20:
+                min_secs = 40
+                vol_note = f"MUY ESTABLE ({_vol_for_sizing:.3f}%)"
+            elif _vol_for_sizing >= 0 and _vol_for_sizing < 0.50:
+                min_secs = 60
+                vol_note = f"NORMAL ({_vol_for_sizing:.3f}%)"
+            else:
+                min_secs = 90
+                vol_note = f"VOLÁTIL ({_vol_for_sizing:.3f}%)"
+
+            if remaining < min_secs:
                 print(
                     f"[LiveTrader] ⏭️ contract expires in {remaining:.0f}s "
-                    f"— skipping entry (minimum 90s required)"
+                    f"— skipping entry (min={min_secs}s, market={vol_note})"
                 )
                 return None
-
-        # 10. Token ID from state (current dynamic tokens)
-        token_id = state.pm_up_id if direction == "LONG" else state.pm_dn_id
-        if not token_id:
-            print(f"[LiveTrader] ❌ bloqueado: no token_id en state para {coin} {timeframe}")
-            self._log_error("execute_signal", f"No token_id en state para {coin} {timeframe}")
-            return None
-        print(f"[LiveTrader] token_id={token_id[:24]}…")
-
-        # 11. Verify best price
-        best = await self.get_best_price(token_id)
-        if best is None:
-            print(f"[LiveTrader] ❌ bloqueado: cannot fetch best price")
-            self._log_error("execute_signal", f"Cannot fetch best price for {token_id}")
-            return None
-        print(f"[LiveTrader] best_price={best}")
-
-        # 11b. Verify sufficient liquidity before placing buy
-        try:
-            book      = await asyncio.to_thread(self.client.get_order_book, token_id)
-            asks      = book.asks or []
-            available = sum(float(a.size) for a in asks[:5])
-            needed    = self.max_position_size / detected_price
-            if available < needed:
+            else:
                 print(
-                    f"[LiveTrader] ⏭️ liquidez insuficiente — "
-                    f"disponible={available:.2f} necesario={needed:.2f}"
+                    f"[LiveTrader] ⏱️ {remaining:.0f}s remaining "
+                    f"(min={min_secs}s, market={vol_note}) — proceeding"
+                )
+
+        # Async race condition guard — set before first await
+        if self._opening_position:
+            print("[LiveTrader] ❌ bloqueado: apertura en curso")
+            return None
+        self._opening_position = True
+
+        try:
+            # 10. Token ID from state (current dynamic tokens)
+            token_id = state.pm_up_id if direction == "LONG" else state.pm_dn_id
+            if not token_id:
+                print(f"[LiveTrader] ❌ bloqueado: no token_id en state para {coin} {timeframe}")
+                self._log_error("execute_signal", f"No token_id en state para {coin} {timeframe}")
+                return None
+            print(f"[LiveTrader] token_id={token_id[:24]}…")
+
+            # 11. Verify best price
+            best = await self.get_best_price(token_id)
+            if best is None:
+                print(f"[LiveTrader] ❌ bloqueado: cannot fetch best price")
+                self._log_error("execute_signal", f"Cannot fetch best price for {token_id}")
+                return None
+            print(f"[LiveTrader] best_price={best}")
+
+            # 11b. Verify sufficient liquidity before placing buy
+            try:
+                book      = await asyncio.to_thread(self.client.get_order_book, token_id)
+                asks      = book.asks or []
+                available = sum(float(a.size) for a in asks[:5])
+                needed    = capital / detected_price
+                if available < needed:
+                    print(
+                        f"[LiveTrader] ⏭️ insufficient liquidity for {direction} "
+                        f"detected={detected_price:.4f} "
+                        f"available={available:.2f} needed={needed:.2f}"
+                    )
+                    return None
+            except Exception as e:
+                self._log_error("execute_signal.liquidity_check", str(e))
+                return None
+
+            # 12-13. Place FOK market buy — MarketOrderArgs handles sizing from USD amount
+            response = await self.place_buy_order(token_id, capital)
+            if response is None:
+                return None
+
+            # 14. Real fill price — derived from makingAmount / takingAmount
+            # Polymarket never returns a "price" field in FOK responses.
+            print(f"[LiveTrader DEBUG] buy response completo: {response}")
+            contracts         = float(response["takingAmount"])
+            actual_fill_price = float(response["makingAmount"]) / contracts
+            print(
+                f"[LiveTrader DEBUG] fill price derivado: {actual_fill_price:.4f} "
+                f"(making={response['makingAmount']} taking={response['takingAmount']})"
+            )
+
+            # Guard: fill price must be in safe range (not a near-resolved contract)
+            if actual_fill_price < 0.05 or actual_fill_price > 0.95:
+                self._log_error(
+                    "execute_signal",
+                    f"Precio fuera de rango seguro: {actual_fill_price:.4f} — abortando",
                 )
                 return None
-        except Exception as e:
-            self._log_error("execute_signal.liquidity_check", str(e))
-            return None
 
-        # 12-13. Place FOK market buy — MarketOrderArgs handles sizing from USD amount
-        response = await self.place_buy_order(token_id, self.max_position_size)
-        if response is None:
-            return None
+            # Warning: high slippage — track anyway, never abort after a successful buy
+            real_slippage = (actual_fill_price - detected_price) / detected_price
+            if abs(real_slippage) > 0.05:
+                print(
+                    f"[LiveTrader] ⚠️ high slippage: {real_slippage * 100:+.2f}% "
+                    f"(detected={detected_price:.4f} fill={actual_fill_price:.4f}) "
+                    f"— tracking with real fill price"
+                )
+                self._log_error(
+                    "execute_signal",
+                    f"High slippage {real_slippage * 100:+.2f}% — "
+                    f"detected={detected_price:.4f} fill={actual_fill_price:.4f} "
+                    f"— position tracked with real fill price",
+                )
 
-        # 14. Real fill price — derived from makingAmount / takingAmount
-        # Polymarket never returns a "price" field in FOK responses.
-        print(f"[LiveTrader DEBUG] buy response completo: {response}")
-        contracts         = float(response["takingAmount"])
-        actual_fill_price = float(response["makingAmount"]) / contracts
-        print(
-            f"[LiveTrader DEBUG] fill price derivado: {actual_fill_price:.4f} "
-            f"(making={response['makingAmount']} taking={response['takingAmount']})"
-        )
+            print(f"[LiveTrader DEBUG] contracts reales del response: {contracts}")
 
-        # Guard: fill price must be in safe range (not a near-resolved contract)
-        if actual_fill_price < 0.05 or actual_fill_price > 0.95:
-            self._log_error(
-                "execute_signal",
-                f"Precio fuera de rango seguro: {actual_fill_price:.4f} — abortando",
+            # Guard: contracts truly absurd (> capital / 0.10) — emergency sell then abort
+            if contracts > capital / 0.10:
+                self._log_error(
+                    "execute_signal",
+                    f"Contracts absurdos: {contracts:.2f} (max=100) — emergency sell",
+                )
+                await self.place_sell_order(token_id, contracts, actual_fill_price)
+                return None
+
+            tp_target        = round(actual_fill_price + 0.10, 4)
+            sl_target        = round(actual_fill_price - 0.15, 4)
+            slippage_applied = round(
+                (actual_fill_price - detected_price) / detected_price, 4
             )
-            return None
 
-        # Guard: excessive real slippage — log but continue (position already open)
-        real_slippage = (actual_fill_price - detected_price) / detected_price
-        if abs(real_slippage) > 0.03:
+            # 16. Build and persist position
+            pos_id   = len(self._data["positions"]) + 1
+            order_id = response.get("id") or response.get("orderID") or ""
+
+            position = {
+                "id":                   pos_id,
+                "timestamp_open":       now.isoformat(),
+                "timestamp_close":      None,
+                "coin":                 coin,
+                "timeframe":            timeframe,
+                "direction":            direction,
+                "token_id":             token_id,
+                "entry_price_detected": detected_price,
+                "entry_price_max":      max_price,
+                "entry_price_real":     actual_fill_price,
+                "slippage_applied":     slippage_applied,
+                "exit_price_detected":  None,
+                "exit_price_real":      None,
+                "entry_btc_price":      btc_price,
+                "exit_btc_price":       None,
+                "capital":              capital,
+                "contracts":            contracts,
+                "tp_target":            tp_target,
+                "sl_target":            sl_target,
+                "highest_price":        actual_fill_price,
+                "ticks_open":           0,
+                "pnl_usd":              None,
+                "status":               "OPEN",
+                "order_id":             order_id,
+                "close_order_id":       None,
+                "score":                signal.get("score", 0),
+                "conviction_level":     cl,
+                "triggered_conditions": triggered_conditions,
+            }
+
+            self._data["positions"].append(position)
+            self._recalc_summary()
+            self._open_position = position
+            await asyncio.to_thread(self._save)
+            self.recent_trades.append(now)
+
+            slip_pct = slippage_applied * 100
             print(
-                f"[LiveTrader] ⚠️ fill slippage too high: {real_slippage * 100:+.2f}% "
-                f"(detected={detected_price:.4f} fill={actual_fill_price:.4f}) "
-                f"— position opened in Polymarket but TP/SL may be unreliable"
-            )
-            self._log_error(
-                "execute_signal",
-                f"Excessive slippage: {real_slippage * 100:+.2f}% — "
-                f"detected={detected_price:.4f} fill={actual_fill_price:.4f}",
+                f"  [LiveTrader] OPENED {direction} {coin} {timeframe}  "
+                f"detected: {detected_price:.4f}  fill: {actual_fill_price:.4f}  "
+                f"slip: {slip_pct:+.2f}%"
             )
 
-        print(f"[LiveTrader DEBUG] contracts reales del response: {contracts}")
+            # 17. Return opened position
+            return position
 
-        # Guard: contracts must not be absurdly large (protects against near-zero prices)
-        _max_safe = self.max_position_size / 0.10
-        if contracts > _max_safe:
-            self._log_error(
-                "execute_signal",
-                f"Contracts absurdos: {contracts:.2f} (max={_max_safe:.2f}) — abortando",
-            )
-            return None
-
-        tp_target        = round(actual_fill_price + 0.10, 4)
-        sl_target        = round(actual_fill_price - 0.15, 4)
-        slippage_applied = round(
-            (actual_fill_price - detected_price) / detected_price, 4
-        )
-
-        # 16. Build and persist position
-        pos_id   = len(self._data["positions"]) + 1
-        order_id = response.get("id") or response.get("orderID") or ""
-
-        position = {
-            "id":                   pos_id,
-            "timestamp_open":       now.isoformat(),
-            "timestamp_close":      None,
-            "coin":                 coin,
-            "timeframe":            timeframe,
-            "direction":            direction,
-            "token_id":             token_id,
-            "entry_price_detected": detected_price,
-            "entry_price_max":      max_price,
-            "entry_price_real":     actual_fill_price,
-            "slippage_applied":     slippage_applied,
-            "exit_price_detected":  None,
-            "exit_price_real":      None,
-            "entry_btc_price":      btc_price,
-            "exit_btc_price":       None,
-            "capital":              self.max_position_size,
-            "contracts":            contracts,
-            "tp_target":            tp_target,
-            "sl_target":            sl_target,
-            "highest_price":        actual_fill_price,
-            "ticks_open":           0,
-            "pnl_usd":              None,
-            "status":               "OPEN",
-            "order_id":             order_id,
-            "close_order_id":       None,
-            "score":                signal.get("score", 0),
-            "conviction_level":     cl,
-            "triggered_conditions": triggered_conditions,
-        }
-
-        self._data["positions"].append(position)
-        self._recalc_summary()
-        await asyncio.to_thread(self._save)
-        self.recent_trades.append(now)
-
-        slip_pct = slippage_applied * 100
-        print(
-            f"  [LiveTrader] OPENED {direction} {coin} {timeframe}  "
-            f"detected: {detected_price:.4f}  fill: {actual_fill_price:.4f}  "
-            f"slip: {slip_pct:+.2f}%"
-        )
-
-        # 17. Return opened position
-        return position
+        finally:
+            self._opening_position = False
 
     async def check_and_close(
         self,
         current_pm_up_price: float,
         btc_price: float | None = None,
+        state=None,
     ) -> bool:
         """Evaluate TP/trailing/SL/full resolution and execute close order if triggered.
 
         All comparisons use tp_target / sl_target calculated on entry_price_real.
-        pnl_usd is calculated on contracts (from entry_price_real) and exit_price_real.
+        pnl_usd is calculated as usdc_received - capital (exact, handles partial sells).
         """
         position = self.current_open_position
         if position is None or current_pm_up_price is None:
@@ -567,8 +663,8 @@ class LiveTrader:
             new_status          = "WIN_TP"
             exit_contract_price = current
 
-        # 2. Trailing stop — armed at 0.75, fires on 12% drop from peak
-        elif highest >= 0.75 and current <= round(highest - 0.12, 4):
+        # 2. Trailing stop — armed at 0.72, fires on 12% drop from peak
+        elif highest >= 0.72 and current <= round(highest - 0.12, 4):
             exit_contract_price = current
             new_status = "WIN_TRAIL" if exit_contract_price > entry_price else "LOSS_SL"
 
@@ -601,9 +697,43 @@ class LiveTrader:
             return False
 
         # ── Execute close via Polymarket ──────────────────────────────────────
-        token_id = position["token_id"]
+        token_id    = position["token_id"]
+        sell_amounts = [
+            round(contracts * 0.99, 4),  # attempt 1
+            round(contracts * 0.97, 4),  # attempt 2
+            round(contracts * 0.95, 4),  # attempt 3
+            round(contracts * 0.90, 4),  # attempt 4
+        ]
 
-        response = await self.place_sell_order(token_id, contracts, current)
+        response = None
+        for attempt, amount in enumerate(sell_amounts, 1):
+            # Re-read freshest price if state is available
+            if state is not None and state.pm_up is not None:
+                latest_pm_up = state.pm_up
+            else:
+                latest_pm_up = current_pm_up_price
+            latest_price = latest_pm_up if direction == "LONG" else 1.0 - latest_pm_up
+
+            if attempt > 1:
+                price_is_urgent = latest_price <= sl or latest_price <= (entry_price - 0.05)
+                if price_is_urgent:
+                    print(
+                        f"[LiveTrader] ⚡ precio urgente ({latest_price:.4f} <= SL {sl:.4f}) "
+                        f"— venta inmediata intento {attempt}"
+                    )
+                else:
+                    delay = attempt - 1  # 1s, 2s, 3s for attempts 2/3/4
+                    print(
+                        f"[LiveTrader] ⏳ reintento {attempt} en {delay}s "
+                        f"({amount:.4f} contratos) precio={latest_price:.4f}..."
+                    )
+                    await asyncio.sleep(delay)
+
+            response = await self._try_sell_once(token_id, amount)
+            if response is not None:
+                print(f"[LiveTrader] ✅ venta ejecutada en intento {attempt}")
+                break
+            print(f"[LiveTrader] ⚠️ intento {attempt} sin liquidez")
 
         if response is None:
             position["status"]          = "CLOSE_FAILED"
@@ -612,9 +742,27 @@ class LiveTrader:
             self.last_close_timestamp = datetime.now(timezone.utc)
             print("⚠️  CLOSE_FAILED — cooldown activado, revisar posición manualmente")
         else:
-            exit_price_real = float(response.get("price", exit_contract_price))
-            pnl             = (contracts * exit_price_real) - capital
-            slip_pct        = position.get("slippage_applied", 0) * 100
+            try:
+                contracts_sold  = float(response["makingAmount"])
+                usdc_received   = float(response["takingAmount"])
+                exit_price_real = usdc_received / contracts_sold
+                print(
+                    f"[LiveTrader DEBUG] exit fill price: {exit_price_real:.4f} "
+                    f"(taking={response['takingAmount']} making={response['makingAmount']})"
+                )
+                pnl = usdc_received - capital
+            except (KeyError, ZeroDivisionError):
+                contracts_sold  = contracts
+                exit_price_real = exit_contract_price
+                pnl             = (contracts_sold * exit_price_real) - capital
+
+            # Reclassify based on real outcome (partial fills can flip the result)
+            if pnl > 0 and new_status in ("LOSS_SL", "LOSS_FULL"):
+                new_status = "WIN_TP"
+            elif pnl <= 0 and new_status in ("WIN_TP", "WIN_TRAIL", "WIN_FULL"):
+                new_status = "LOSS_SL"
+
+            slip_pct = position.get("slippage_applied", 0) * 100
 
             _MSGS = {
                 "WIN_TP":    f"✅ LIVE WIN TP    +${pnl:.2f} │ Fill: {entry_price:.2f}→{exit_price_real:.2f} │ Slip: {slip_pct:.2f}%",
@@ -626,6 +774,7 @@ class LiveTrader:
             print(_MSGS.get(new_status, f"  [LiveTrader] closed {new_status} pnl=${pnl:.2f}"))
 
             position["status"]              = new_status
+            position["contracts_sold"]      = contracts_sold
             position["exit_price_detected"] = exit_contract_price
             position["exit_price_real"]     = exit_price_real
             position["exit_btc_price"]      = btc_price
@@ -643,6 +792,7 @@ class LiveTrader:
                 self._data["positions"][i] = position
                 break
 
+        self._open_position = None
         self._recalc_summary()
         await asyncio.to_thread(self._save)
         return closed_ok
@@ -658,6 +808,10 @@ class LiveTrader:
             else 1.0 - current_pm_up_price
         )
         return (pos["contracts"] * current_contract) - pos["capital"]
+
+    def _recent_volatility(self, state) -> float:
+        v = calc_volatility(state.trades, state.mid or 1.0)
+        return v if v >= 0 else 1.0  # treat no-data as volatile for entry guard
 
     def _log_error(self, method: str, error) -> None:
         """Append error to errors_log.json (JSONL). Never propagates."""

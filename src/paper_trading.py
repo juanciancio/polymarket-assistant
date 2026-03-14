@@ -7,7 +7,7 @@ CAPITAL = 10.0
 TP_OFFSET    = 0.10   # take-profit: +10% over entry_pm_price
 SL_OFFSET    = 0.15   # stop-loss:   -15% below entry_pm_price
 TRAIL_DROP   = 0.12   # trailing stop: close if price drops 12% from highest
-TRAIL_ARMED  = 0.75   # trailing stop only arms once highest_price >= this level
+TRAIL_ARMED  = 0.72   # trailing stop only arms once highest_price >= this level
 
 COOLDOWN_SECS  = 45   # minimum seconds between trades
 BURST_WINDOW   = 300  # seconds for burst-limit window
@@ -38,6 +38,11 @@ class PaperTrader:
         # Session-only state (not persisted)
         self.last_close_timestamp: datetime | None = None
         self.recent_trades: list[datetime] = []
+
+        # O(1) open-position cache — updated only on open/close
+        self._open_position: dict | None = next(
+            (p for p in self._data["positions"] if p["status"] == "OPEN"), None
+        )
 
     # ── Persistence ─────────────────────────────────────────────
 
@@ -81,11 +86,8 @@ class PaperTrader:
 
     @property
     def current_open_position(self) -> dict | None:
-        """Return the single OPEN position, or None."""
-        for p in self._data["positions"]:
-            if p["status"] == "OPEN":
-                return p
-        return None
+        """Return the single OPEN position, or None. O(1) — cache updated on open/close."""
+        return self._open_position
 
     @property
     def cooldown_remaining(self) -> int:
@@ -200,7 +202,7 @@ class PaperTrader:
 
         self._data["positions"].append(position)
         self._recalc_summary()
-        self._save()
+        self._open_position = position
         self.recent_trades.append(now)
         return position
 
@@ -303,7 +305,7 @@ class PaperTrader:
                     break
 
             self._recalc_summary()
-            self._save()
+            self._open_position = None
             self.last_close_timestamp = datetime.now(timezone.utc)
 
         return position

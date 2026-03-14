@@ -5,7 +5,7 @@ import hashlib
 import json
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
@@ -87,6 +87,8 @@ def _make_ds(coin: str, tf: str) -> dict:
         "walls_buy": [], "walls_sell": [],
         "depth": {},
         "poc": 0.0, "vol_profile": [],
+        # Volatility
+        "volatility": -1.0,
         # Scoring
         "entry": {}, "divergence": {},
         "trend_score": 0, "trend_label": "NEUTRAL", "trend_col": "yellow",
@@ -200,11 +202,12 @@ async def pm_scheduler(state: feeds.State, coin: str, tf: str):
                 state.next_token_dn = dn
 
         if secs_left <= 0:
-            state.reconnection_in_progress = True
             new_up = state.next_token_up
             new_dn = state.next_token_dn
 
             if not new_up:
+                # No pre-fetched token — need HTTP to find the new contract
+                state.reconnection_in_progress = True
                 print(f"  [PM scheduler] endDate reached — fetching next contract…")
                 for attempt in range(6):
                     if attempt > 0:
@@ -216,12 +219,22 @@ async def pm_scheduler(state: feeds.State, coin: str, tf: str):
                         break
                     print(f"  [PM scheduler] same/no contract, waiting… ({attempt + 1}/6)")
             else:
-                _, _, end_time = await feeds.fetch_pm_tokens_full_async(coin, tf)
-                if end_time:
-                    state.market_end_time = end_time
+                # Tokens already pre-fetched — calculate next end_time locally
+                # for fixed-interval timeframes to avoid an HTTP round-trip.
+                _TF_DELTA = {"5m": 5, "15m": 15, "4h": 240}
+                if tf in _TF_DELTA and state.market_end_time is not None:
+                    state.market_end_time = (
+                        state.market_end_time + timedelta(minutes=_TF_DELTA[tf])
+                    )
+                else:
+                    # 1h / daily — ET-based slugs; HTTP needed for accurate end_time
+                    _, _, end_time = await feeds.fetch_pm_tokens_full_async(coin, tf)
+                    if end_time:
+                        state.market_end_time = end_time
 
             if new_up and new_dn and new_up != state.pm_up_id:
                 old_up = state.pm_up_id
+                state.reconnection_in_progress = True  # set just before the switch
                 asyncio.ensure_future(asyncio.to_thread(_append_reconnect_log, {
                     "timestamp":    datetime.now(timezone.utc).isoformat(),
                     "coin":         coin,
@@ -279,10 +292,24 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
         ds["vwap"]      = ind.vwap(klines)
         ds["ema_s"], ds["ema_l"] = ind.emas(klines)
         ds["ha"]        = ind.heikin_ashi(klines)
-        ds["bias"]      = ind.bias_score(bids, asks, mid, trades, klines)
         ds["walls_buy"], ds["walls_sell"] = ind.walls(bids, asks)
         ds["depth"]     = ind.depth_usd(bids, asks, mid) if mid else {}
         ds["poc"], ds["vol_profile"] = ind.vol_profile(klines)
+        ds["volatility"] = lt.calc_volatility(trades, mid)
+        # bias_score called last so all precomputed values are ready
+        ds["bias"]      = ind.bias_score(bids, asks, mid, trades, klines, precomputed={
+            "ema_s":      ds["ema_s"],
+            "ema_l":      ds["ema_l"],
+            "obi":        ds["obi"],
+            "macd_hist":  hv,
+            "cvd5":       ds["cvd_windows"].get(300, 0),
+            "ha":         ds["ha"],
+            "vwap":       ds["vwap"],
+            "rsi":        ds["rsi"],
+            "poc":        ds["poc"],
+            "walls_buy":  ds["walls_buy"],
+            "walls_sell": ds["walls_sell"],
+        })
 
         # ── Trend score (same logic as old _score_trend) ─────────────────
         t_score = 0
@@ -375,8 +402,12 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
                 "has_divergence":   divergence["has_divergence"],
             }))
 
+        # ── Paper trading (disabled when live trading is active) ─────────
+        paper_active = not live.live_trading
+
         # ── Open paper position on MAX_CONVICTION ────────────────────────
-        if (cl in ("MAX_BULLISH", "MAX_BEARISH")
+        if (paper_active
+                and cl in ("MAX_BULLISH", "MAX_BEARISH")
                 and trader.current_open_position is None
                 and state.pm_up is not None):
             signal = {
@@ -391,6 +422,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
                     f"{state.pm_up:.3f}[/yellow]"
                 )
             else:
+                asyncio.ensure_future(asyncio.to_thread(trader._save))
                 ds["pending_alerts"].append(
                     f"[cyan]📋 PAPER TRADE ABIERTO #{pos['id']}: "
                     f"{pos['direction']}  entry PM {pos['entry_pm_price']:.3f}  "
@@ -399,10 +431,11 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
 
         # ── Check resolution of open position ────────────────────────────
         open_pos = trader.current_open_position
-        if open_pos is not None and state.pm_up is not None:
+        if paper_active and open_pos is not None and state.pm_up is not None:
             updated = trader.check_resolution(open_pos, state.pm_up, mid)
             status  = updated["status"]
             if status in paper_trading.CLOSED_STATUSES:
+                asyncio.ensure_future(asyncio.to_thread(trader._save))
                 pnl      = updated["pnl"]
                 wr       = trader.summary["win_rate"]
                 exit_str = f"Salida: {updated['exit_pm_price']:.3f}"
@@ -451,7 +484,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
         live_open = live.current_open_position
         if live_open is not None and state.pm_up is not None:
             try:
-                await live.check_and_close(state.pm_up, mid)
+                await live.check_and_close(state.pm_up, mid, state)
             except Exception as e:
                 live._log_error("data_loop.check_and_close", e)
 

@@ -52,6 +52,21 @@ def pick(title: str, options: list[str]) -> str:
         console.print("  [red]invalid – try again[/red]")
 
 
+def _rotate_signal_log():
+    """Keep signals_log.json under 500 entries."""
+    if not os.path.exists(SIGNALS_LOG):
+        return
+    try:
+        with open(SIGNALS_LOG, encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) > 500:
+            with open(SIGNALS_LOG, "w", encoding="utf-8") as f:
+                f.writelines(lines[-500:])
+            print(f"  [signals_log] rotated — kept last 500 of {len(lines)} entries")
+    except Exception:
+        pass
+
+
 def _append_signal_log(event: dict):
     with open(SIGNALS_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(event) + "\n")
@@ -113,6 +128,7 @@ def _ds_hash(ds: dict) -> str:
         "pm_reconn":   ds["pm_reconnecting"],
         "obi":         round(ds["obi"], 3),
         "bias":        round(ds["bias"], 1),
+        "volatility":  round(ds.get("volatility", -1.0), 2),
     }
     return hashlib.md5(json.dumps(key, sort_keys=True).encode()).hexdigest()
 
@@ -529,6 +545,8 @@ async def main():
     tf   = pick("Select timeframe:", config.COIN_TIMEFRAMES[coin])
 
     console.print(f"\n[bold green]Starting {coin} {tf} …[/bold green]\n")
+
+    _rotate_signal_log()
 
     trader = paper_trading.PaperTrader(PAPER_TRADES_LOG)
     s = trader.summary

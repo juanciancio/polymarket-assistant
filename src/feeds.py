@@ -38,6 +38,7 @@ class State:
         self.next_token_dn:   str | None         = None  # pre-fetched next Down token
         self.next_token_prefetched: bool         = False # True once prefetch attempted
         self.reconnection_in_progress: bool      = False # guard: only one actor reconnects
+        self.last_token_switch:        float     = 0.0   # epoch of last token swap
 
 
 OB_POLL_INTERVAL = 2
@@ -306,6 +307,7 @@ def apply_new_pm_tokens(state: State, new_up: str, new_dn: str):
     """Swap token IDs in state and signal pm_feed to reconnect."""
     state.pm_up_id              = new_up
     state.pm_dn_id              = new_dn
+    state.last_token_switch     = time.time()
     state.pm_up                 = None
     state.pm_dn                 = None
     state.last_pm_update        = time.time()

@@ -435,7 +435,7 @@ def _paper_panel(trader: "pt.PaperTrader", ds: dict) -> Panel:
             trail_stop = round(highest - 0.12, 3)
             high_str = (
                 f"  │  [yellow]trail stop: ${trail_stop:.3f}[/yellow]"
-                if highest >= 0.75 else ""
+                if highest >= 0.72 else ""
             )
             t.add_row("Actual", f"${cur_contract:.3f}{high_str}")
             if upnl is not None:
@@ -563,7 +563,7 @@ def _live_panel(live_trader, ds: dict) -> Panel:
             f"${e_det:.4f}  │  ${e_real:.4f}  │  {slip_pct2:+.2f}%",
         )
         trail_str = ""
-        if highest >= 0.75:
+        if highest >= 0.72:
             trail_stop = round(highest - 0.12, 3)
             trail_str  = f"  │  [yellow]Trail activo: ${trail_stop:.3f}[/yellow]"
         t.add_row(

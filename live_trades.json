@@ -1,16 +1,16 @@
 {
   "summary": {
-    "total_trades": 8,
-    "wins": 5,
-    "losses": 3,
+    "total_trades": 30,
+    "wins": 19,
+    "losses": 11,
     "open": 0,
     "close_failed": 0,
-    "win_rate": 62.5,
-    "total_pnl_usd": -1.6304151999999998,
-    "daily_pnl": -1.6304151999999998,
+    "win_rate": 63.33333333333333,
+    "total_pnl_usd": -4.9136152000000015,
+    "daily_pnl": -4.9136152000000015,
     "daily_loss_limit": 30.0,
     "fok_canceled_count": 0,
-    "avg_slippage": 0.0330125
+    "avg_slippage": 0.012726666666666667
   },
   "positions": [
     {
@@ -439,6 +439,1174 @@
         ]
       ],
       "contracts_sold": 12.53
+    },
+    {
+      "id": 9,
+      "timestamp_open": "2026-03-14T19:57:27.217814+00:00",
+      "timestamp_close": "2026-03-14T19:57:45.481476+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "SHORT",
+      "token_id": "91330319064412938734748244451851421666512697304592292842368881110449253584876",
+      "entry_price_detected": 0.8200000000000001,
+      "entry_price_max": 0.8364,
+      "entry_price_real": 0.8499999971666657,
+      "slippage_applied": 0.0366,
+      "exit_price_detected": 0.79,
+      "exit_price_real": 0.81,
+      "entry_btc_price": 86.955,
+      "exit_btc_price": 86.965,
+      "capital": 15.0,
+      "contracts": 17.647053,
+      "tp_target": 0.95,
+      "sl_target": 0.7,
+      "highest_price": 0.92,
+      "ticks_open": 77,
+      "pnl_usd": -0.8492999999999995,
+      "status": "LOSS_SL",
+      "order_id": "0x8c2822c1080d9d3bfea4ab79763b409b37f5aaf7f7a0ff662306319db870b2e0",
+      "close_order_id": "0x67887f28a08e270e6795176c0d3e8434718bde56fcd875727634be67fd66dc2e",
+      "score": -5,
+      "conviction_level": "MAX_BEARISH",
+      "triggered_conditions": [
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "BIAS < -45%",
+          -2
+        ],
+        [
+          "CVD 5m negative",
+          -1
+        ],
+        [
+          "Price below VWAP",
+          -1
+        ],
+        [
+          "EMA 5 < EMA 20 (death cross)",
+          -1
+        ],
+        [
+          "HA 3+ bearish candles",
+          -1
+        ]
+      ],
+      "contracts_sold": 17.47
+    },
+    {
+      "id": 10,
+      "timestamp_open": "2026-03-14T20:47:26.592944+00:00",
+      "timestamp_close": "2026-03-14T20:47:52.536813+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "30772759992401467155895892053355259611875744307142284157458989815296790151267",
+      "entry_price_detected": 0.7,
+      "entry_price_max": 0.714,
+      "entry_price_real": 0.7053353694018403,
+      "slippage_applied": 0.0076,
+      "exit_price_detected": 0.86,
+      "exit_price_real": 0.81,
+      "entry_btc_price": 87.10499999999999,
+      "exit_btc_price": 87.11500000000001,
+      "capital": 15.0,
+      "contracts": 21.266475,
+      "tp_target": 0.8053,
+      "sl_target": 0.5553,
+      "highest_price": 0.86,
+      "ticks_open": 104,
+      "pnl_usd": 1.7022000000000013,
+      "status": "WIN_TP",
+      "order_id": "0xa60c9e1e68cc12a59de622a0e928cdb08a7d64de955fd5d31e4b7545f578bafe",
+      "close_order_id": "0xe830dbefa83c7dd24c38a93e5000e89266c0fa82a796d056d7e03559d4fa4307",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 20.62
+    },
+    {
+      "id": 11,
+      "timestamp_open": "2026-03-14T20:48:01.706014+00:00",
+      "timestamp_close": "2026-03-14T20:48:09.310979+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "30772759992401467155895892053355259611875744307142284157458989815296790151267",
+      "entry_price_detected": 0.73,
+      "entry_price_max": 0.7446,
+      "entry_price_real": 0.729999987589999,
+      "slippage_applied": -0.0,
+      "exit_price_detected": 0.85,
+      "exit_price_real": 0.85,
+      "entry_btc_price": 87.13499999999999,
+      "exit_btc_price": 87.11500000000001,
+      "capital": 10.0,
+      "contracts": 13.698629,
+      "tp_target": 0.83,
+      "sl_target": 0.58,
+      "highest_price": 0.85,
+      "ticks_open": 24,
+      "pnl_usd": 1.5259999999999998,
+      "status": "WIN_TP",
+      "order_id": "0x2264ab38638b3593148b043f1675f0f429d6646d92d34417b98f63f1aa9aa3e9",
+      "close_order_id": "0x00a6641553d357d90b777d71f3d595da426d31acf5b9c9b094585d36fe14601c",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 13.56
+    },
+    {
+      "id": 12,
+      "timestamp_open": "2026-03-14T20:48:18.563819+00:00",
+      "timestamp_close": "2026-03-14T20:48:41.669180+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "30772759992401467155895892053355259611875744307142284157458989815296790151267",
+      "entry_price_detected": 0.71,
+      "entry_price_max": 0.7242,
+      "entry_price_real": 0.7198560287942412,
+      "slippage_applied": 0.0139,
+      "exit_price_detected": 0.82,
+      "exit_price_real": 0.8024248302618816,
+      "entry_btc_price": 87.11500000000001,
+      "exit_btc_price": 87.11500000000001,
+      "capital": 15.0,
+      "contracts": 20.8375,
+      "tp_target": 0.8199,
+      "sl_target": 0.5699,
+      "highest_price": 0.82,
+      "ticks_open": 99,
+      "pnl_usd": 1.5459999999999994,
+      "status": "WIN_TP",
+      "order_id": "0x041bde6c95d3abbebd149e7a5ab418d962103836e5b4a09997dae1b6981e38fc",
+      "close_order_id": "0xd00bfc9743687ac33f80db2fbae46a65279b1892fe07f8f19e6d55b58ab07780",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 20.62
+    },
+    {
+      "id": 13,
+      "timestamp_open": "2026-03-14T20:48:50.831636+00:00",
+      "timestamp_close": "2026-03-14T20:48:56.788442+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "30772759992401467155895892053355259611875744307142284157458989815296790151267",
+      "entry_price_detected": 0.81,
+      "entry_price_max": 0.8262,
+      "entry_price_real": 0.8099999918999985,
+      "slippage_applied": -0.0,
+      "exit_price_detected": 0.52,
+      "exit_price_real": 0.47308783415166394,
+      "entry_btc_price": 87.11500000000001,
+      "exit_btc_price": 87.11500000000001,
+      "capital": 15.0,
+      "contracts": 18.518515,
+      "tp_target": 0.91,
+      "sl_target": 0.66,
+      "highest_price": 0.8099999918999985,
+      "ticks_open": 17,
+      "pnl_usd": -6.3283000000000005,
+      "status": "LOSS_SL",
+      "order_id": "0x8b811fb569573d349a2f2897533b82b623e8d914bc6ea51bbd92386d6874ae8c",
+      "close_order_id": "0xe7dd93887e5be663fbf57eeda484a4cd46ef60bfcaf3bdf7b3200de480d50eea",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 18.33
+    },
+    {
+      "id": 14,
+      "timestamp_open": "2026-03-14T20:49:27.822616+00:00",
+      "timestamp_close": "2026-03-14T20:49:44.818341+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "30772759992401467155895892053355259611875744307142284157458989815296790151267",
+      "entry_price_detected": 0.68,
+      "entry_price_max": 0.6936,
+      "entry_price_real": 0.7978723404255319,
+      "slippage_applied": 0.1733,
+      "exit_price_detected": 0.9,
+      "exit_price_real": 0.865583019881784,
+      "entry_btc_price": 87.08500000000001,
+      "exit_btc_price": 87.10499999999999,
+      "capital": 15.0,
+      "contracts": 18.8,
+      "tp_target": 0.8979,
+      "sl_target": 0.6479,
+      "highest_price": 0.9,
+      "ticks_open": 69,
+      "pnl_usd": 1.1084999999999994,
+      "status": "WIN_TP",
+      "order_id": "0x298add68006550552c471be6db9005e53d3f79504b0f8a06f686d9bf87a28545",
+      "close_order_id": "0x90e112feb84a4da313cc82c75523a52d0d2c93532bc808a1a52591e9992eeffa",
+      "score": 7,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "BIAS > 65%",
+          2
+        ],
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 18.61
+    },
+    {
+      "id": 15,
+      "timestamp_open": "2026-03-14T20:59:17.317857+00:00",
+      "timestamp_close": "2026-03-14T20:59:41.084931+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "9890845268211014174170121678802676102718313664871300851315661376004533705998",
+      "entry_price_detected": 0.77,
+      "entry_price_max": 0.7854,
+      "entry_price_real": 0.8399999955199985,
+      "slippage_applied": 0.0909,
+      "exit_price_detected": 0.94,
+      "exit_price_real": 0.9128296547821165,
+      "entry_btc_price": 87.11500000000001,
+      "exit_btc_price": 87.095,
+      "capital": 15.0,
+      "contracts": 17.857137,
+      "tp_target": 0.94,
+      "sl_target": 0.69,
+      "highest_price": 0.94,
+      "ticks_open": 100,
+      "pnl_usd": 1.1296999999999997,
+      "status": "WIN_TP",
+      "order_id": "0x119470f1f78f1b9dc7bf087dd349a6607030189f24ef4bdc0e36212d3f92aa24",
+      "close_order_id": "0x81f161ea06e9ee4beea86771c93bb60136d76dc04e0ef9654eb5a39dffa2cdcf",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 17.67
+    },
+    {
+      "id": 16,
+      "timestamp_open": "2026-03-14T21:06:01.908857+00:00",
+      "timestamp_close": "2026-03-14T21:06:09.734280+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "SHORT",
+      "token_id": "114857831456233003260624014173937652326406729537382312117183919150403543196011",
+      "entry_price_detected": 0.6599999999999999,
+      "entry_price_max": 0.6732,
+      "entry_price_real": 0.6967485067517258,
+      "slippage_applied": 0.0557,
+      "exit_price_detected": 0.84,
+      "exit_price_real": 0.8090996168582375,
+      "entry_btc_price": 86.985,
+      "exit_btc_price": 86.92500000000001,
+      "capital": 15.0,
+      "contracts": 21.52857,
+      "tp_target": 0.7967,
+      "sl_target": 0.5467,
+      "highest_price": 0.84,
+      "ticks_open": 16,
+      "pnl_usd": 1.8939999999999984,
+      "status": "WIN_TP",
+      "order_id": "0x35442d6bf2144433db023d74ebebba6cd861905f6ce2a192c6f68f75e21621b6",
+      "close_order_id": "0x87756109181d249946540453f5bd10e494d0cae046a7e0021ac8d145f2f918e0",
+      "score": -5,
+      "conviction_level": "MAX_BEARISH",
+      "triggered_conditions": [
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "BIAS < -45%",
+          -2
+        ],
+        [
+          "CVD 5m negative",
+          -1
+        ],
+        [
+          "Price below VWAP",
+          -1
+        ],
+        [
+          "EMA 5 < EMA 20 (death cross)",
+          -1
+        ],
+        [
+          "HA 3+ bearish candles",
+          -1
+        ]
+      ],
+      "contracts_sold": 20.88
+    },
+    {
+      "id": 17,
+      "timestamp_open": "2026-03-14T21:06:20.740590+00:00",
+      "timestamp_close": "2026-03-14T21:08:01.009394+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "SHORT",
+      "token_id": "114857831456233003260624014173937652326406729537382312117183919150403543196011",
+      "entry_price_detected": 0.83,
+      "entry_price_max": 0.8466,
+      "entry_price_real": 0.8599999988533332,
+      "slippage_applied": 0.0361,
+      "exit_price_detected": 1.0,
+      "exit_price_real": 0.9499999999999998,
+      "entry_btc_price": 86.92500000000001,
+      "exit_btc_price": 86.92500000000001,
+      "capital": 15.0,
+      "contracts": 17.441857,
+      "tp_target": 0.96,
+      "sl_target": 0.71,
+      "highest_price": 0.95,
+      "ticks_open": 471,
+      "pnl_usd": 1.3969999999999985,
+      "status": "WIN_FULL",
+      "order_id": "0x4c43c32c6656002c35e0dc88206de0113656fce9682358175c322c09f29cca88",
+      "close_order_id": "0x86b03b2c732cda279c2cb2dcb84c99d5956b2f6f9c335d65a72812b09a248423",
+      "score": -5,
+      "conviction_level": "MAX_BEARISH",
+      "triggered_conditions": [
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "BIAS < -45%",
+          -2
+        ],
+        [
+          "CVD 5m negative",
+          -1
+        ],
+        [
+          "Price below VWAP",
+          -1
+        ],
+        [
+          "EMA 5 < EMA 20 (death cross)",
+          -1
+        ],
+        [
+          "HA 3+ bearish candles",
+          -1
+        ]
+      ],
+      "contracts_sold": 17.26
+    },
+    {
+      "id": 18,
+      "timestamp_open": "2026-03-14T21:13:12.530571+00:00",
+      "timestamp_close": "2026-03-14T21:13:22.744708+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "SHORT",
+      "token_id": "87711150781851883281913760817835611888705818305382207191043023548938371366223",
+      "entry_price_detected": 0.6599999999999999,
+      "entry_price_max": 0.6732,
+      "entry_price_real": 0.7000000000000001,
+      "slippage_applied": 0.0606,
+      "exit_price_detected": 0.84,
+      "exit_price_real": 0.94,
+      "entry_btc_price": 86.935,
+      "exit_btc_price": 86.91499999999999,
+      "capital": 15.0,
+      "contracts": 21.42857,
+      "tp_target": 0.8,
+      "sl_target": 0.55,
+      "highest_price": 0.84,
+      "ticks_open": 22,
+      "pnl_usd": 4.533200000000001,
+      "status": "WIN_TP",
+      "order_id": "0xab8b89e984e330aea7dbd212c2909a8ef0f37695e32f7de3fea785d27e792355",
+      "close_order_id": "0x32efb0f14dadda88f06eb4fc8300655ae7894f4756bf358ecb260b0f3e070464",
+      "score": -5,
+      "conviction_level": "MAX_BEARISH",
+      "triggered_conditions": [
+        [
+          "BIAS < -45%",
+          -2
+        ],
+        [
+          "CVD 5m negative",
+          -1
+        ],
+        [
+          "Price below VWAP",
+          -1
+        ],
+        [
+          "EMA 5 < EMA 20 (death cross)",
+          -1
+        ]
+      ],
+      "contracts_sold": 20.78
+    },
+    {
+      "id": 19,
+      "timestamp_open": "2026-03-14T21:38:00.727432+00:00",
+      "timestamp_close": "2026-03-14T21:38:31.052559+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "90157114376016387153007223918568830451190422107979765391551414929515494973004",
+      "entry_price_detected": 0.74,
+      "entry_price_max": 0.7548,
+      "entry_price_real": 0.719999985599996,
+      "slippage_applied": -0.027,
+      "exit_price_detected": 0.82,
+      "exit_price_real": 0.8099999999999999,
+      "entry_btc_price": 87.065,
+      "exit_btc_price": 87.08500000000001,
+      "capital": 10.0,
+      "contracts": 13.888885,
+      "tp_target": 0.82,
+      "sl_target": 0.57,
+      "highest_price": 0.82,
+      "ticks_open": 123,
+      "pnl_usd": 0.9107000000000003,
+      "status": "WIN_TP",
+      "order_id": "0xed1b781bb825c599602d6c9ad2a226e35677dc56b6b10ca1b34fe7d386834677",
+      "close_order_id": "0x500e1452a822e86c8bfd4ee738f62b8dc4200b218e598006cdd3b01aeffeaf9b",
+      "score": 7,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "BIAS > 65%",
+          2
+        ],
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 13.47
+    },
+    {
+      "id": 20,
+      "timestamp_open": "2026-03-14T21:41:46.439341+00:00",
+      "timestamp_close": "2026-03-14T21:42:08.848239+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "109862082896878024887446103924622002255367941187486480408192710250825223902226",
+      "entry_price_detected": 0.66,
+      "entry_price_max": 0.6732,
+      "entry_price_real": 0.64,
+      "slippage_applied": -0.0303,
+      "exit_price_detected": 0.49,
+      "exit_price_real": 0.41514738231412224,
+      "entry_btc_price": 87.10499999999999,
+      "exit_btc_price": 87.10499999999999,
+      "capital": 15.0,
+      "contracts": 23.4375,
+      "tp_target": 0.74,
+      "sl_target": 0.49,
+      "highest_price": 0.64,
+      "ticks_open": 92,
+      "pnl_usd": -5.563700000000001,
+      "status": "LOSS_SL",
+      "order_id": "0x48842ba66ec2777dfdf589de21d7ed6aa18a0bb8df7f305983ee1c862414ca5b",
+      "close_order_id": "0xe948d6013e6f0440ec3fb61e1553842c20dfc62d8675c9f19f40f52ba3c6d877",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 22.73
+    },
+    {
+      "id": 21,
+      "timestamp_open": "2026-03-14T21:43:54.939665+00:00",
+      "timestamp_close": "2026-03-14T21:44:20.126327+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "109862082896878024887446103924622002255367941187486480408192710250825223902226",
+      "entry_price_detected": 0.8,
+      "entry_price_max": 0.816,
+      "entry_price_real": 0.8500000000000001,
+      "slippage_applied": 0.0625,
+      "exit_price_detected": 0.96,
+      "exit_price_real": 0.9560137457044673,
+      "entry_btc_price": 87.13499999999999,
+      "exit_btc_price": 87.13499999999999,
+      "capital": 10.0,
+      "contracts": 11.7647,
+      "tp_target": 0.95,
+      "sl_target": 0.77,
+      "highest_price": 0.96,
+      "ticks_open": 109,
+      "pnl_usd": 1.1280000000000001,
+      "status": "WIN_TP",
+      "order_id": "0x856ead3df58d518bcaaa44315711bae7dd515eba2e1e6f6207687181b62c990e",
+      "close_order_id": "0x16ad2dec5d81bdbe0ebe7911b434e18ed0df58f7b320647d54af5497362265b3",
+      "score": 7,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "BIAS > 65%",
+          2
+        ],
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 11.64
+    },
+    {
+      "id": 22,
+      "timestamp_open": "2026-03-14T21:51:12.489923+00:00",
+      "timestamp_close": "2026-03-14T21:51:33.468985+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "77725151965435767923773327626499952914846297959865179758936429695026705693184",
+      "entry_price_detected": 0.66,
+      "entry_price_max": 0.6732,
+      "entry_price_real": 0.6619078428235192,
+      "slippage_applied": 0.0029,
+      "exit_price_detected": 0.79,
+      "exit_price_real": 0.840919017288444,
+      "entry_btc_price": 87.215,
+      "exit_btc_price": 87.235,
+      "capital": 15.0,
+      "contracts": 22.661762,
+      "tp_target": 0.7619,
+      "sl_target": 0.5119,
+      "highest_price": 0.79,
+      "ticks_open": 79,
+      "pnl_usd": 3.4833999999999996,
+      "status": "WIN_TP",
+      "order_id": "0xb2bac13ea0eef79d0fbf614d3d5d93f2375415f611c85e7bb3e4647eb3c92519",
+      "close_order_id": "0xd21b7b19bc4053eac70ae19bbbcec2af66c223e4aa6a9fed860231388fda68ec",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 21.98
+    },
+    {
+      "id": 23,
+      "timestamp_open": "2026-03-14T21:51:42.743740+00:00",
+      "timestamp_close": "2026-03-14T21:52:24.973380+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "77725151965435767923773327626499952914846297959865179758936429695026705693184",
+      "entry_price_detected": 0.79,
+      "entry_price_max": 0.8058,
+      "entry_price_real": 0.7899999865699948,
+      "slippage_applied": -0.0,
+      "exit_price_detected": 0.89,
+      "exit_price_real": 0.8495770151636075,
+      "entry_btc_price": 87.245,
+      "exit_btc_price": 87.255,
+      "capital": 10.0,
+      "contracts": 12.658223,
+      "tp_target": 0.89,
+      "sl_target": 0.71,
+      "highest_price": 0.89,
+      "ticks_open": 190,
+      "pnl_usd": 0.6452000000000009,
+      "status": "WIN_TP",
+      "order_id": "0x3823f3392f12c58cd343b48b628a803221fe198946205428de4f00bddc639726",
+      "close_order_id": "0x28ef828854759e6dff354ab28328c6a117d77cd85bda7440899554c4272c8f73",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 12.53
+    },
+    {
+      "id": 24,
+      "timestamp_open": "2026-03-14T21:59:22.383960+00:00",
+      "timestamp_close": "2026-03-14T21:59:38.538376+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "41319233893025793298664274549905210270061072390138839627586602847646982215626",
+      "entry_price_detected": 0.79,
+      "entry_price_max": 0.8058,
+      "entry_price_real": 0.40999999097999934,
+      "slippage_applied": -0.481,
+      "exit_price_detected": 0.19,
+      "exit_price_real": 0.24961588260681913,
+      "entry_btc_price": 87.285,
+      "exit_btc_price": 87.255,
+      "capital": 10.0,
+      "contracts": 24.390242,
+      "tp_target": 0.51,
+      "sl_target": 0.26,
+      "highest_price": 0.42,
+      "ticks_open": 57,
+      "pnl_usd": -4.2164,
+      "status": "LOSS_SL",
+      "order_id": "0xd91b4c877237f1304a2ef32938095c57a0ef7058679afc77e8530255068f2717",
+      "close_order_id": "0x4591d28a74cec55fe237445a9279fb72fae9ccfa8354a57b094880959e198d12",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 23.17
+    },
+    {
+      "id": 25,
+      "timestamp_open": "2026-03-14T22:06:01.179293+00:00",
+      "timestamp_close": "2026-03-14T22:07:03.899855+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "65142729934969344134490567876229931493406401933274805279927252425641109222109",
+      "entry_price_detected": 0.66,
+      "entry_price_max": 0.6732,
+      "entry_price_real": 0.6499999869999994,
+      "slippage_applied": -0.0152,
+      "exit_price_detected": 0.79,
+      "exit_price_real": 0.62,
+      "entry_btc_price": 87.435,
+      "exit_btc_price": 87.435,
+      "capital": 15.0,
+      "contracts": 23.076922,
+      "tp_target": 0.75,
+      "sl_target": 0.5,
+      "highest_price": 0.79,
+      "ticks_open": 260,
+      "pnl_usd": -1.4095999999999993,
+      "status": "LOSS_SL",
+      "order_id": "0x9fd6eb7499a53bd540d15ab365ecdbcb1dd23af2155965bb1748a331bcee0850",
+      "close_order_id": "0xb57466e634bf8380a5bac2b3828ab250925d759b5c5515a9ee45f5752f0a8703",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 21.92
+    },
+    {
+      "id": 26,
+      "timestamp_open": "2026-03-14T22:07:22.564743+00:00",
+      "timestamp_close": "2026-03-14T22:07:44.163211+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "65142729934969344134490567876229931493406401933274805279927252425641109222109",
+      "entry_price_detected": 0.66,
+      "entry_price_max": 0.6732,
+      "entry_price_real": 0.6695536183929784,
+      "slippage_applied": 0.0145,
+      "exit_price_detected": 0.51,
+      "exit_price_real": 0.44086056143580304,
+      "entry_btc_price": 87.42500000000001,
+      "exit_btc_price": 87.41499999999999,
+      "capital": 15.0,
+      "contracts": 22.402984,
+      "tp_target": 0.7696,
+      "sl_target": 0.5196,
+      "highest_price": 0.68,
+      "ticks_open": 86,
+      "pnl_usd": -5.4201,
+      "status": "LOSS_SL",
+      "order_id": "0xeb838b00248e7fb2876dc6abd0b0fefdcabf82fd04fbb6431a819bf32b19efdc",
+      "close_order_id": "0xbc4370bd48d3614545dd30462d3c02902ed5f2931a3ed4850e565c6d732b1ad6",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 21.73
+    },
+    {
+      "id": 27,
+      "timestamp_open": "2026-03-14T23:01:00.527335+00:00",
+      "timestamp_close": "2026-03-14T23:01:19.614804+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "14114616821861803593648831849760996385866186910584798604040602697749347367991",
+      "entry_price_detected": 0.81,
+      "entry_price_max": 0.8262,
+      "entry_price_real": 0.8199999835999839,
+      "slippage_applied": 0.0123,
+      "exit_price_detected": 0.93,
+      "exit_price_real": 0.9,
+      "entry_btc_price": 87.375,
+      "exit_btc_price": 87.38499999999999,
+      "capital": 5.0,
+      "contracts": 6.097555,
+      "tp_target": 0.92,
+      "sl_target": 0.74,
+      "highest_price": 0.93,
+      "ticks_open": 57,
+      "pnl_usd": 0.2110000000000003,
+      "status": "WIN_TP",
+      "order_id": "0xb0cf7e003e1d8ddbf7c0e0e298a81412300bd9571c333ef65a2ae5432d35a80c",
+      "close_order_id": "0x0eb0eac5412e23e59c5f5e117527a393e2d7811ec5a7e410380b8cd562bcd173",
+      "score": 7,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "BIAS > 65%",
+          2
+        ],
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 5.79
+    },
+    {
+      "id": 28,
+      "timestamp_open": "2026-03-14T23:05:30.834824+00:00",
+      "timestamp_close": "2026-03-14T23:05:40.048315+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "32282955646183596401197656045601953952910119005334514141582506673930628447860",
+      "entry_price_detected": 0.73,
+      "entry_price_max": 0.7446,
+      "entry_price_real": 0.7362564686283489,
+      "slippage_applied": 0.0086,
+      "exit_price_detected": 0.67,
+      "exit_price_real": 0.6279365079365079,
+      "entry_btc_price": 87.88499999999999,
+      "exit_btc_price": 87.89500000000001,
+      "capital": 7.5,
+      "contracts": 10.186665,
+      "tp_target": 0.8363,
+      "sl_target": 0.6563,
+      "highest_price": 0.79,
+      "ticks_open": 30,
+      "pnl_usd": -1.1703999999999999,
+      "status": "LOSS_SL",
+      "order_id": "0xe8dbdcf3a6e4c55e8f0f451cb4eb04601215fdca7dbecba1288569ab4933d56f",
+      "close_order_id": "0x144597a4d0d2762dac875af9626bc2df7e39fe559e8ddde2e360c43c26f49efd",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 10.08
+    },
+    {
+      "id": 29,
+      "timestamp_open": "2026-03-14T23:05:56.450434+00:00",
+      "timestamp_close": "2026-03-14T23:06:11.457414+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "32282955646183596401197656045601953952910119005334514141582506673930628447860",
+      "entry_price_detected": 0.67,
+      "entry_price_max": 0.6834,
+      "entry_price_real": 0.7341269785918986,
+      "slippage_applied": 0.0957,
+      "exit_price_detected": 0.89,
+      "exit_price_real": 0.8899999999999999,
+      "entry_btc_price": 87.86500000000001,
+      "exit_btc_price": 87.965,
+      "capital": 10.0,
+      "contracts": 13.621619,
+      "tp_target": 0.8341,
+      "sl_target": 0.6541,
+      "highest_price": 0.89,
+      "ticks_open": 52,
+      "pnl_usd": 1.9971999999999994,
+      "status": "WIN_TP",
+      "order_id": "0xdc30d27507f74e35ecb562002a11d61b9f4b856f54db6ee893574be5b155028c",
+      "close_order_id": "0xf15bb2d455a1b6de509890436953689a12015b57270ab5a71c7daf88985c59f9",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 13.48
+    },
+    {
+      "id": 30,
+      "timestamp_open": "2026-03-14T23:30:11.357146+00:00",
+      "timestamp_close": "2026-03-14T23:30:23.638629+00:00",
+      "coin": "SOL",
+      "timeframe": "5m",
+      "direction": "LONG",
+      "token_id": "57074252095439477461144560540471137109605231706749534346567252276397210895196",
+      "entry_price_detected": 0.7,
+      "entry_price_max": 0.714,
+      "entry_price_real": 0.7000000000000001,
+      "slippage_applied": 0.0,
+      "exit_price_detected": 0.64,
+      "exit_price_real": 0.6478585178055822,
+      "entry_btc_price": 87.975,
+      "exit_btc_price": 87.985,
+      "capital": 15.0,
+      "contracts": 21.42857,
+      "tp_target": 0.8,
+      "sl_target": 0.55,
+      "highest_price": 0.76,
+      "ticks_open": 43,
+      "pnl_usd": -1.5374999999999996,
+      "status": "LOSS_SL",
+      "order_id": "0x8c6fd6d213d5d47617b7b98bae5526cf1dc0e0858fcf7912b7716bbb6b491181",
+      "close_order_id": "0x292666beb8edad66cf4f83ac131811e942faa63ca33e9c0c2507c17d4780743c",
+      "score": 5,
+      "conviction_level": "MAX_BULLISH",
+      "triggered_conditions": [
+        [
+          "CVD 5m positive & growing",
+          1
+        ],
+        [
+          "Price above VWAP",
+          1
+        ],
+        [
+          "OBI positive",
+          1
+        ],
+        [
+          "EMA 5 > EMA 20 (golden cross)",
+          1
+        ],
+        [
+          "HA 3+ bullish candles",
+          1
+        ]
+      ],
+      "contracts_sold": 20.78
     }
   ]
 }

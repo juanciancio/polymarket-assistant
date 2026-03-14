@@ -158,6 +158,17 @@ class PaperTrader:
                 print("⏭️  LONG bloqueado — precio bajo VWAP")
                 return None
 
+        # ── 4b. SHORT VWAP filter ────────────────────────────────
+        if direction == "SHORT":
+            triggered_conditions = signal.get("triggered_conditions", [])
+            vwap_against = any(
+                cond[0] == "Price above VWAP"
+                for cond in triggered_conditions
+            )
+            if vwap_against:
+                print("⏭️  SHORT bloqueado — precio sobre VWAP")
+                return None
+
         # ── Compute entry fields ─────────────────────────────────
         # LONG buys Up contract; SHORT buys Down contract (1 − pm_up_price)
         entry_pm_price = pm_up_price if direction == "LONG" else (1.0 - pm_up_price)

@@ -317,6 +317,17 @@ class LiveTrader:
             print("[LiveTrader] ⏭️ PM reconnecting — skipping entry")
             return None
 
+        # Guard: reject entry if contract switched less than 10s ago
+        # pm_up price may be stale from the previous contract
+        last_switch = getattr(state, "last_token_switch", 0.0)
+        if time.time() - last_switch < 10.0:
+            print(
+                f"[LiveTrader] ⏭️ contrato recién cambiado "
+                f"({time.time() - last_switch:.1f}s ago) "
+                f"— precio puede ser stale, esperando"
+            )
+            return None
+
         # 2. One position at a time
         if self.current_open_position is not None:
             print("[LiveTrader] ❌ bloqueado: posición ya abierta")
@@ -372,9 +383,10 @@ class LiveTrader:
                 print("[LiveTrader] ❌ bloqueado: SHORT con Price above VWAP")
                 return None
 
-        # 8. Price range validation
+        # 8. Price range validation — compute volatility once for both directions
+        volatility = self._recent_volatility(state)
+
         if direction == "LONG":
-            volatility = self._recent_volatility(state)
             if volatility >= 0 and volatility < 0.10:
                 long_upper = 0.85
                 vol_label  = f"ULTRA ESTABLE ({volatility:.3f}%)"
@@ -392,7 +404,6 @@ class LiveTrader:
                 )
                 return None
         if direction == "SHORT":
-            volatility = self._recent_volatility(state)
             if volatility >= 0 and volatility < 0.10:
                 short_upper = 0.85
                 vol_label   = f"ULTRA ESTABLE ({volatility:.3f}%)"
@@ -410,27 +421,41 @@ class LiveTrader:
                 )
                 return None
 
-        # 9. Adaptive position sizing based on volatility
-        _vol_for_sizing = volatility  # computed in step 8 for both LONG and SHORT
+        # 9. Two-dimensional capital: volatility tier × entry price zone
+        _TRAIL_ARMED = 0.72
 
-        if _vol_for_sizing >= 0 and _vol_for_sizing < 0.10:
-            capital = round(self.max_position_size * 2.0, 2)
-            print(
-                f"[LiveTrader] 🚀 mercado ULTRA ESTABLE ({_vol_for_sizing:.3f}%) "
-                f"— capital máximo: ${capital:.2f}"
-            )
-        elif _vol_for_sizing >= 0 and _vol_for_sizing < 0.20:
-            capital = round(self.max_position_size * 1.5, 2)
-            print(
-                f"[LiveTrader] 📈 mercado MUY ESTABLE ({_vol_for_sizing:.3f}%) "
-                f"— capital aumentado: ${capital:.2f}"
-            )
+        if volatility >= 0 and volatility < 0.10:
+            vol_tier = "ULTRA ESTABLE"
+        elif volatility >= 0 and volatility < 0.20:
+            vol_tier = "MUY ESTABLE"
         else:
-            capital = self.max_position_size
-            print(
-                f"[LiveTrader] capital normal: ${capital:.2f} "
-                f"(volatilidad {_vol_for_sizing:.3f}%)"
-            )
+            vol_tier = "NORMAL/VOLÁTIL"
+
+        if detected_price > 0.80:
+            capital    = self.max_position_size
+            price_zone = "ZONA RESOLUCIÓN (>0.80)"
+        elif detected_price >= _TRAIL_ARMED:
+            price_zone = f"ZONA TRAIL ({detected_price:.2f})"
+            if volatility >= 0 and volatility < 0.10:
+                capital = round(self.max_position_size * 2.0, 2)
+            elif volatility >= 0 and volatility < 0.20:
+                capital = round(self.max_position_size * 1.5, 2)
+            else:
+                capital = self.max_position_size
+        else:
+            price_zone = f"ZONA NORMAL ({detected_price:.2f})"
+            if volatility >= 0 and volatility < 0.10:
+                capital = round(self.max_position_size * 3.0, 2)
+            elif volatility >= 0 and volatility < 0.20:
+                capital = round(self.max_position_size * 2.0, 2)
+            else:
+                capital = self.max_position_size
+
+        capital = min(capital, self.max_position_size * 3.0)
+        print(
+            f"[LiveTrader] 💰 capital: ${capital:.2f} "
+            f"({price_zone} × vol={vol_tier})"
+        )
 
         # Max price with slippage
         max_price = round(detected_price * (1 + self.slippage_tolerance), 4)
@@ -440,18 +465,18 @@ class LiveTrader:
         if state.market_end_time is not None:
             remaining = (state.market_end_time - datetime.now(timezone.utc)).total_seconds()
 
-            if _vol_for_sizing >= 0 and _vol_for_sizing < 0.10:
+            if volatility >= 0 and volatility < 0.10:
                 min_secs = 30
-                vol_note = f"ULTRA ESTABLE ({_vol_for_sizing:.3f}%)"
-            elif _vol_for_sizing >= 0 and _vol_for_sizing < 0.20:
+                vol_note = f"ULTRA ESTABLE ({volatility:.3f}%)"
+            elif volatility >= 0 and volatility < 0.20:
                 min_secs = 40
-                vol_note = f"MUY ESTABLE ({_vol_for_sizing:.3f}%)"
-            elif _vol_for_sizing >= 0 and _vol_for_sizing < 0.50:
+                vol_note = f"MUY ESTABLE ({volatility:.3f}%)"
+            elif volatility >= 0 and volatility < 0.50:
                 min_secs = 60
-                vol_note = f"NORMAL ({_vol_for_sizing:.3f}%)"
+                vol_note = f"NORMAL ({volatility:.3f}%)"
             else:
                 min_secs = 90
-                vol_note = f"VOLÁTIL ({_vol_for_sizing:.3f}%)"
+                vol_note = f"VOLÁTIL ({volatility:.3f}%)"
 
             if remaining < min_secs:
                 print(
@@ -549,13 +574,33 @@ class LiveTrader:
             if contracts > capital / 0.10:
                 self._log_error(
                     "execute_signal",
-                    f"Contracts absurdos: {contracts:.2f} (max=100) — emergency sell",
+                    f"Contracts absurdos: {contracts:.2f} — emergency sell attempt",
                 )
-                await self.place_sell_order(token_id, contracts, actual_fill_price)
+                await self._try_sell_once(token_id, round(contracts * 0.90, 4))
                 return None
 
-            tp_target        = round(actual_fill_price + 0.10, 4)
-            sl_target        = round(actual_fill_price - 0.15, 4)
+            tp_target  = round(actual_fill_price + 0.10, 4)
+
+            # Tighter SL when trail is already armed at entry, or capital is elevated
+            _TRAIL_ARMED = 0.72
+            if actual_fill_price >= _TRAIL_ARMED:
+                sl_target = round(actual_fill_price - 0.08, 4)
+                sl_used   = 0.08
+                print(
+                    f"[LiveTrader] ⚠️ trail armado en entrada "
+                    f"({actual_fill_price:.4f} >= {_TRAIL_ARMED}) "
+                    f"— SL ajustado a {sl_target:.4f} (−0.08)"
+                )
+            elif capital > self.max_position_size:
+                sl_target = round(actual_fill_price - 0.10, 4)
+                sl_used   = 0.10
+            else:
+                sl_target = round(actual_fill_price - 0.15, 4)
+                sl_used   = 0.15
+            print(
+                f"[LiveTrader] SL: {sl_target:.4f} "
+                f"(−{sl_used} | capital=${capital:.2f})"
+            )
             slippage_applied = round(
                 (actual_fill_price - detected_price) / detected_price, 4
             )
@@ -715,7 +760,12 @@ class LiveTrader:
             latest_price = latest_pm_up if direction == "LONG" else 1.0 - latest_pm_up
 
             if attempt > 1:
-                price_is_urgent = latest_price <= sl or latest_price <= (entry_price - 0.05)
+                price_is_urgent = (
+                    latest_price <= sl
+                    or latest_price <= (entry_price - 0.05)
+                    or (new_status in ("WIN_TP", "WIN_TRAIL")
+                        and latest_price < entry_price)
+                )
                 if price_is_urgent:
                     print(
                         f"[LiveTrader] ⚡ precio urgente ({latest_price:.4f} <= SL {sl:.4f}) "

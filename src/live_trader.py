@@ -43,14 +43,15 @@ load_dotenv()
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.constants import POLYGON
-    from py_clob_client.clob_types import ApiCreds, OrderType, MarketOrderArgs
+    from py_clob_client.clob_types import OrderType, MarketOrderArgs
     from py_clob_client.order_builder.constants import BUY, SELL
     _CLOB_AVAILABLE = True
 except ImportError:
     _CLOB_AVAILABLE = False
 
 import config
+
+_DEBUG = os.getenv("LIVE_TRADER_DEBUG", "false") == "true"
 
 # ── Safety hardcaps (non-negotiable, override .env) ──────────────────────────
 _MAX_POSITION_HARDCAP = 50.0
@@ -92,6 +93,11 @@ class LiveTrader:
         self.last_clob_call: float             = 0.0  # epoch of last CLOB HTTP request
         self._opening_position: bool           = False  # guard against concurrent opens
 
+        # ── Loss protection ─────────────────────────────────────────────
+        self._recent_losses: dict[str, float]  = {}    # "token_id:direction" → epoch
+        self._consecutive_losses: int          = 0
+        self._circuit_open_until: float        = 0.0   # epoch when trading resumes
+
         # ── Persistent data ─────────────────────────────────────────────
         self._file = filepath
         self._data = self._load()
@@ -101,6 +107,12 @@ class LiveTrader:
         self._open_position: dict | None = next(
             (p for p in self._data["positions"] if p["status"] == "OPEN"), None
         )
+
+        # ── Render cache (requires _data) ───────────────────────────────
+        self._recent_close_failed: list[dict] = [
+            p for p in self._data["positions"]
+            if p.get("status") == "CLOSE_FAILED"
+        ]
 
         # Recover today's P&L from existing records
         today = datetime.now(timezone.utc).date()
@@ -257,7 +269,7 @@ class LiveTrader:
             await asyncio.sleep(0)   # yield to event loop between CPU-bound calls
             resp   = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)
             self.last_clob_call = time.time()
-            print(f"[LiveTrader DEBUG] place_buy_order resp={resp}")
+            if _DEBUG: print(f"[LiveTrader DEBUG] place_buy_order resp={resp}")
             if resp.get("status") == "canceled":
                 self._log_error("place_buy_order", f"FOK cancelado token={token_id}")
                 self._data["summary"]["fok_canceled_count"] = (
@@ -328,27 +340,36 @@ class LiveTrader:
             )
             return None
 
-        # 2. One position at a time
+        # 2. Circuit breaker
+        if time.time() < self._circuit_open_until:
+            remaining = self._circuit_open_until - time.time()
+            print(
+                f"[LiveTrader] 🔴 circuit breaker activo — "
+                f"reanuda en {remaining:.0f}s"
+            )
+            return None
+
+        # 3. One position at a time
         if self.current_open_position is not None:
             print("[LiveTrader] ❌ bloqueado: posición ya abierta")
             return None
 
-        # 3. Daily loss limit
+        # 4. Daily loss limit
         if self.daily_pnl <= -self.daily_loss_limit:
             print(f"[LiveTrader] ❌ bloqueado: daily loss limit ({self.daily_pnl:.2f})")
             return None
 
-        # 4. Cooldown (45 s)
+        # 5. Cooldown
         remaining = self.cooldown_remaining
         if remaining > 0:
             print(f"[LiveTrader] ❌ bloqueado: cooldown {remaining}s")
             return None
 
-        # 5. Burst limit (3 trades / 5 min)
-        now = datetime.now(timezone.utc)
+        # 6. Burst limit
+        open_time = datetime.now(timezone.utc)
         self.recent_trades = [
             t for t in self.recent_trades
-            if (now - t).total_seconds() < _BURST_WINDOW
+            if (open_time - t).total_seconds() < _BURST_WINDOW
         ]
         if len(self.recent_trades) >= _BURST_MAX:
             print(f"[LiveTrader] ❌ bloqueado: burst limit {_BURST_MAX}/{_BURST_WINDOW // 60}min")
@@ -383,20 +404,14 @@ class LiveTrader:
                 print("[LiveTrader] ❌ bloqueado: SHORT con Price above VWAP")
                 return None
 
-        # 8. Price range validation — compute volatility once for both directions
+        # 8. Volatility tier + price range validation + capital + expiry guard
         volatility = self._recent_volatility(state)
+        tier       = self._volatility_tier(volatility)
+
+        long_upper  = tier["long_upper"]
+        short_upper = tier["short_upper"]
 
         if direction == "LONG":
-            if volatility >= 0 and volatility < 0.10:
-                long_upper = 0.85
-                vol_label  = f"ULTRA ESTABLE ({volatility:.3f}%)"
-            elif volatility >= 0 and volatility < 0.20:
-                long_upper = 0.78
-                vol_label  = f"MUY ESTABLE ({volatility:.3f}%)"
-            else:
-                long_upper = 0.75
-                vol_label  = f"NORMAL/VOLÁTIL ({volatility:.3f}%)"
-            print(f"[LiveTrader] volatilidad 60s: {vol_label} → límite LONG {long_upper}")
             if not (0.55 <= detected_price <= long_upper):
                 print(
                     f"[LiveTrader] ❌ bloqueado: LONG precio fuera de rango "
@@ -404,16 +419,6 @@ class LiveTrader:
                 )
                 return None
         if direction == "SHORT":
-            if volatility >= 0 and volatility < 0.10:
-                short_upper = 0.85
-                vol_label   = f"ULTRA ESTABLE ({volatility:.3f}%)"
-            elif volatility >= 0 and volatility < 0.20:
-                short_upper = 0.70
-                vol_label   = f"MUY ESTABLE ({volatility:.3f}%)"
-            else:
-                short_upper = 0.65
-                vol_label   = f"NORMAL/VOLÁTIL ({volatility:.3f}%)"
-            print(f"[LiveTrader] volatilidad 60s: {vol_label} → límite SHORT {short_upper}")
             if not (0.35 <= detected_price <= short_upper):
                 print(
                     f"[LiveTrader] ❌ bloqueado: SHORT precio fuera de rango "
@@ -422,61 +427,33 @@ class LiveTrader:
                 return None
 
         # 9. Two-dimensional capital: volatility tier × entry price zone
-        _TRAIL_ARMED = 0.72
-
-        if volatility >= 0 and volatility < 0.10:
-            vol_tier = "ULTRA ESTABLE"
-        elif volatility >= 0 and volatility < 0.20:
-            vol_tier = "MUY ESTABLE"
-        else:
-            vol_tier = "NORMAL/VOLÁTIL"
-
         if detected_price > 0.80:
-            capital    = self.max_position_size
+            mult       = tier["multipliers"]["resolution"]
             price_zone = "ZONA RESOLUCIÓN (>0.80)"
-        elif detected_price >= _TRAIL_ARMED:
+        elif detected_price >= self._TRAIL_ARMED:
+            mult       = tier["multipliers"]["trail"]
             price_zone = f"ZONA TRAIL ({detected_price:.2f})"
-            if volatility >= 0 and volatility < 0.10:
-                capital = round(self.max_position_size * 2.0, 2)
-            elif volatility >= 0 and volatility < 0.20:
-                capital = round(self.max_position_size * 1.5, 2)
-            else:
-                capital = self.max_position_size
         else:
+            mult       = tier["multipliers"]["normal"]
             price_zone = f"ZONA NORMAL ({detected_price:.2f})"
-            if volatility >= 0 and volatility < 0.10:
-                capital = round(self.max_position_size * 3.0, 2)
-            elif volatility >= 0 and volatility < 0.20:
-                capital = round(self.max_position_size * 2.0, 2)
-            else:
-                capital = self.max_position_size
 
-        capital = min(capital, self.max_position_size * 3.0)
+        capital = min(round(self.max_position_size * mult, 2), self.max_position_size * 3.0)
+
         print(
-            f"[LiveTrader] 💰 capital: ${capital:.2f} "
-            f"({price_zone} × vol={vol_tier})"
+            f"[LiveTrader] {tier['emoji']} {tier['tier']} ({volatility:.3f}%) "
+            f"→ capital=${capital:.2f} LONG≤{long_upper} SHORT≤{short_upper} "
+            f"min={tier['min_secs']}s ({price_zone})"
         )
 
         # Max price with slippage
         max_price = round(detected_price * (1 + self.slippage_tolerance), 4)
         print(f"[LiveTrader] direction={direction} detected={detected_price:.4f} max={max_price:.4f}")
 
-        # 9b. Contract expiry guard — adaptive minimum based on volatility
+        # 9b. Contract expiry guard — adaptive minimum based on volatility tier
         if state.market_end_time is not None:
             remaining = (state.market_end_time - datetime.now(timezone.utc)).total_seconds()
-
-            if volatility >= 0 and volatility < 0.10:
-                min_secs = 30
-                vol_note = f"ULTRA ESTABLE ({volatility:.3f}%)"
-            elif volatility >= 0 and volatility < 0.20:
-                min_secs = 40
-                vol_note = f"MUY ESTABLE ({volatility:.3f}%)"
-            elif volatility >= 0 and volatility < 0.50:
-                min_secs = 60
-                vol_note = f"NORMAL ({volatility:.3f}%)"
-            else:
-                min_secs = 90
-                vol_note = f"VOLÁTIL ({volatility:.3f}%)"
+            min_secs  = tier["min_secs"]
+            vol_note  = f"{tier['tier']} ({volatility:.3f}%)"
 
             if remaining < min_secs:
                 print(
@@ -504,6 +481,23 @@ class LiveTrader:
                 self._log_error("execute_signal", f"No token_id en state para {coin} {timeframe}")
                 return None
             print(f"[LiveTrader] token_id={token_id[:24]}…")
+
+            # 10b. Block re-entry in same contract+direction after recent loss
+            # Cleanup stale entries (older than 10 min) first
+            self._recent_losses = {
+                k: v for k, v in self._recent_losses.items()
+                if time.time() - v < 600
+            }
+            _loss_key  = f"{token_id}:{direction}"
+            _loss_time = self._recent_losses.get(_loss_key, 0.0)
+            _loss_age  = time.time() - _loss_time
+            _loss_ttl  = 300
+            if _loss_age < _loss_ttl:
+                print(
+                    f"[LiveTrader] ⏭️ loss reciente en este contrato+dirección "
+                    f"({_loss_age:.0f}s ago) — esperando {_loss_ttl - _loss_age:.0f}s"
+                )
+                return None
 
             # 11. Verify best price
             best = await self.get_best_price(token_id)
@@ -537,13 +531,14 @@ class LiveTrader:
 
             # 14. Real fill price — derived from makingAmount / takingAmount
             # Polymarket never returns a "price" field in FOK responses.
-            print(f"[LiveTrader DEBUG] buy response completo: {response}")
+            if _DEBUG: print(f"[LiveTrader DEBUG] buy response completo: {response}")
             contracts         = float(response["takingAmount"])
             actual_fill_price = float(response["makingAmount"]) / contracts
-            print(
-                f"[LiveTrader DEBUG] fill price derivado: {actual_fill_price:.4f} "
-                f"(making={response['makingAmount']} taking={response['takingAmount']})"
-            )
+            if _DEBUG:
+                print(
+                    f"[LiveTrader DEBUG] fill price derivado: {actual_fill_price:.4f} "
+                    f"(making={response['makingAmount']} taking={response['takingAmount']})"
+                )
 
             # Guard: fill price must be in safe range (not a near-resolved contract)
             if actual_fill_price < 0.05 or actual_fill_price > 0.95:
@@ -568,7 +563,7 @@ class LiveTrader:
                     f"— position tracked with real fill price",
                 )
 
-            print(f"[LiveTrader DEBUG] contracts reales del response: {contracts}")
+            if _DEBUG: print(f"[LiveTrader DEBUG] contracts reales del response: {contracts}")
 
             # Guard: contracts truly absurd (> capital / 0.10) — emergency sell then abort
             if contracts > capital / 0.10:
@@ -582,7 +577,6 @@ class LiveTrader:
             tp_target  = round(actual_fill_price + 0.10, 4)
 
             # Tighter SL when trail is already armed at entry, or capital is elevated
-            _TRAIL_ARMED = 0.72
             if actual_fill_price >= _TRAIL_ARMED:
                 sl_target = round(actual_fill_price - 0.08, 4)
                 sl_used   = 0.08
@@ -606,12 +600,13 @@ class LiveTrader:
             )
 
             # 16. Build and persist position
+            position_ts = datetime.now(timezone.utc)  # accurate open time post-fill
             pos_id   = len(self._data["positions"]) + 1
             order_id = response.get("id") or response.get("orderID") or ""
 
             position = {
                 "id":                   pos_id,
-                "timestamp_open":       now.isoformat(),
+                "timestamp_open":       position_ts.isoformat(),
                 "timestamp_close":      None,
                 "coin":                 coin,
                 "timeframe":            timeframe,
@@ -644,7 +639,7 @@ class LiveTrader:
             self._recalc_summary()
             self._open_position = position
             await asyncio.to_thread(self._save)
-            self.recent_trades.append(now)
+            self.recent_trades.append(position_ts)
 
             slip_pct = slippage_applied * 100
             print(
@@ -734,11 +729,9 @@ class LiveTrader:
                 new_status = "LOSS_SL"
 
         if new_status is None:
-            # Persist highest_price update (no full recalc needed)
-            for i, p in enumerate(self._data["positions"]):
-                if p["id"] == position["id"]:
-                    self._data["positions"][i] = position
-                    break
+            # _open_position is a reference to the same dict object in
+            # self._data["positions"] — highest_price mutation is already
+            # reflected in the list. No scan or summary recalc needed.
             return False
 
         # ── Execute close via Polymarket ──────────────────────────────────────
@@ -790,16 +783,21 @@ class LiveTrader:
             position["timestamp_close"] = datetime.now(timezone.utc).isoformat()
             # Activate cooldown — capital may still be committed on Polymarket
             self.last_close_timestamp = datetime.now(timezone.utc)
+            self._recent_close_failed = [
+                p for p in self._data["positions"]
+                if p.get("status") == "CLOSE_FAILED"
+            ]
             print("⚠️  CLOSE_FAILED — cooldown activado, revisar posición manualmente")
         else:
             try:
                 contracts_sold  = float(response["makingAmount"])
                 usdc_received   = float(response["takingAmount"])
                 exit_price_real = usdc_received / contracts_sold
-                print(
-                    f"[LiveTrader DEBUG] exit fill price: {exit_price_real:.4f} "
-                    f"(taking={response['takingAmount']} making={response['makingAmount']})"
-                )
+                if _DEBUG:
+                    print(
+                        f"[LiveTrader DEBUG] exit fill price: {exit_price_real:.4f} "
+                        f"(taking={response['takingAmount']} making={response['makingAmount']})"
+                    )
                 pnl = usdc_received - capital
             except (KeyError, ZeroDivisionError):
                 contracts_sold  = contracts
@@ -835,6 +833,22 @@ class LiveTrader:
             self.daily_pnl            += pnl
             self.last_close_timestamp  = datetime.now(timezone.utc)
 
+            # Loss protection bookkeeping
+            if new_status in ("LOSS_SL", "LOSS_FULL"):
+                loss_key = f"{token_id}:{direction}"
+                self._recent_losses[loss_key] = time.time()
+                self._consecutive_losses += 1
+                if self._consecutive_losses >= 3:
+                    pause = 300
+                    self._circuit_open_until = time.time() + pause
+                    print(
+                        f"[LiveTrader] 🔴 CIRCUIT BREAKER — "
+                        f"{self._consecutive_losses} losses consecutivos "
+                        f"— pausa de {pause // 60} minutos"
+                    )
+            else:
+                self._consecutive_losses = 0
+
         # Update position in list
         closed_ok = position["status"] != "CLOSE_FAILED"
         for i, p in enumerate(self._data["positions"]):
@@ -859,9 +873,50 @@ class LiveTrader:
         )
         return (pos["contracts"] * current_contract) - pos["capital"]
 
+    _TRAIL_ARMED = 0.72  # trailing stop arms once price reaches this level
+
     def _recent_volatility(self, state) -> float:
         v = calc_volatility(state.trades, state.mid or 1.0)
         return v if v >= 0 else 1.0  # treat no-data as volatile for entry guard
+
+    def _volatility_tier(self, volatility: float) -> dict:
+        """Return all adaptive parameters for the given volatility level."""
+        if 0 <= volatility < 0.10:
+            return {
+                "tier":        "ULTRA ESTABLE",
+                "emoji":       "🚀",
+                "long_upper":  0.85,
+                "short_upper": 0.85,
+                "min_secs":    30,
+                "multipliers": {"resolution": 1.0, "trail": 2.0, "normal": 3.0},
+            }
+        elif 0 <= volatility < 0.20:
+            return {
+                "tier":        "MUY ESTABLE",
+                "emoji":       "📈",
+                "long_upper":  0.78,
+                "short_upper": 0.70,
+                "min_secs":    40,
+                "multipliers": {"resolution": 1.0, "trail": 1.5, "normal": 2.0},
+            }
+        elif 0 <= volatility < 0.50:
+            return {
+                "tier":        "NORMAL",
+                "emoji":       "➡️",
+                "long_upper":  0.75,
+                "short_upper": 0.65,
+                "min_secs":    60,
+                "multipliers": {"resolution": 1.0, "trail": 1.0, "normal": 1.0},
+            }
+        else:
+            return {
+                "tier":        "VOLÁTIL",
+                "emoji":       "⚠️",
+                "long_upper":  0.75,
+                "short_upper": 0.65,
+                "min_secs":    90,
+                "multipliers": {"resolution": 1.0, "trail": 1.0, "normal": 1.0},
+            }
 
     def _log_error(self, method: str, error) -> None:
         """Append error to errors_log.json (JSONL). Never propagates."""

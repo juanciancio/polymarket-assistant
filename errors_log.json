@@ -21,3 +21,36 @@
 {"timestamp": "2026-03-14T23:05:30.508829+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
 {"timestamp": "2026-03-14T23:05:56.105531+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
 {"timestamp": "2026-03-14T23:05:57.930733+00:00", "method": "execute_signal", "error": "High slippage +9.57% \u2014 detected=0.6700 fill=0.7341 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T00:35:46.746798+00:00", "method": "execute_signal", "error": "High slippage +5.80% \u2014 detected=0.6900 fill=0.7300 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T00:35:46.792009+00:00", "method": "data_loop.execute_signal", "error": "name '_TRAIL_ARMED' is not defined"}
+{"timestamp": "2026-03-15T00:36:27.819111+00:00", "method": "data_loop.execute_signal", "error": "name '_TRAIL_ARMED' is not defined"}
+{"timestamp": "2026-03-15T00:36:29.398849+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-15T00:36:52.764869+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-15T00:36:54.600485+00:00", "method": "data_loop.execute_signal", "error": "name '_TRAIL_ARMED' is not defined"}
+{"timestamp": "2026-03-15T00:37:03.477526+00:00", "method": "execute_signal", "error": "High slippage +6.10% \u2014 detected=0.8200 fill=0.8700 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T00:37:03.521950+00:00", "method": "data_loop.execute_signal", "error": "name '_TRAIL_ARMED' is not defined"}
+{"timestamp": "2026-03-15T00:37:05.174642+00:00", "method": "data_loop.execute_signal", "error": "name '_TRAIL_ARMED' is not defined"}
+{"timestamp": "2026-03-15T00:37:07.159786+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-15T00:37:11.079948+00:00", "method": "data_loop.execute_signal", "error": "name '_TRAIL_ARMED' is not defined"}
+{"timestamp": "2026-03-15T00:37:12.713818+00:00", "method": "data_loop.execute_signal", "error": "name '_TRAIL_ARMED' is not defined"}
+{"timestamp": "2026-03-15T00:37:14.273344+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:15.952848+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:17.643412+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:19.284459+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:20.945874+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:22.534130+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:24.169713+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:25.771700+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:27.514980+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:30.250661+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:31.870236+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:33.488252+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:35.170627+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:36.762017+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:37:38.544678+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:38:28.669735+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:38:30.507179+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:38:32.535015+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:38:34.515133+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:38:36.491858+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:38:38.348151+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}

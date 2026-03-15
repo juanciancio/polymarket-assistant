@@ -170,7 +170,7 @@ async def pm_watchdog(state: feeds.State, coin: str, tf: str):
                 print(f"  [PM watchdog] fetch error: {exc}")
 
         if new_up and new_dn:
-            asyncio.ensure_future(asyncio.to_thread(_append_reconnect_log, {
+            asyncio.create_task(asyncio.to_thread(_append_reconnect_log, {
                 "timestamp":    datetime.now(timezone.utc).isoformat(),
                 "coin":         coin,
                 "timeframe":    tf,
@@ -251,7 +251,7 @@ async def pm_scheduler(state: feeds.State, coin: str, tf: str):
             if new_up and new_dn and new_up != state.pm_up_id:
                 old_up = state.pm_up_id
                 state.reconnection_in_progress = True  # set just before the switch
-                asyncio.ensure_future(asyncio.to_thread(_append_reconnect_log, {
+                asyncio.create_task(asyncio.to_thread(_append_reconnect_log, {
                     "timestamp":    datetime.now(timezone.utc).isoformat(),
                     "coin":         coin,
                     "timeframe":    tf,
@@ -298,7 +298,16 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
         ds["market_end_time"]          = state.market_end_time
 
         # ── Compute every indicator exactly once ─────────────────────────
-        ds["obi"]       = ind.obi(bids, asks, mid)
+        # Order-book indicators: only recalculate when ob_poller delivers new data
+        ob_changed = (bids is not ds.get("_last_bids") or
+                      asks is not ds.get("_last_asks"))
+        if ob_changed:
+            ds["_last_bids"]              = bids
+            ds["_last_asks"]              = asks
+            ds["obi"]                     = ind.obi(bids, asks, mid)
+            ds["walls_buy"], ds["walls_sell"] = ind.walls(bids, asks)
+            ds["depth"]                   = ind.depth_usd(bids, asks, mid) if mid else {}
+
         ds["cvd_windows"] = {s: ind.cvd(trades, s) for s in config.CVD_WINDOWS}
         ds["cvd_3m"]    = ind.cvd(trades, 180)
         ds["delta_1m"]  = ind.cvd(trades, config.DELTA_WINDOW)
@@ -308,8 +317,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
         ds["vwap"]      = ind.vwap(klines)
         ds["ema_s"], ds["ema_l"] = ind.emas(klines)
         ds["ha"]        = ind.heikin_ashi(klines)
-        ds["walls_buy"], ds["walls_sell"] = ind.walls(bids, asks)
-        ds["depth"]     = ind.depth_usd(bids, asks, mid) if mid else {}
+
         ds["poc"], ds["vol_profile"] = ind.vol_profile(klines)
         ds["volatility"] = lt.calc_volatility(trades, mid)
         # bias_score called last so all precomputed values are ready
@@ -404,7 +412,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
                     f"[/bold bright_red on dark_red]\n"
                 )
             print("\a", end="", flush=True)
-            asyncio.ensure_future(asyncio.to_thread(_append_signal_log, {
+            asyncio.create_task(asyncio.to_thread(_append_signal_log, {
                 "timestamp":        ts,
                 "coin":             coin,
                 "timeframe":        tf,
@@ -438,7 +446,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
                     f"{state.pm_up:.3f}[/yellow]"
                 )
             else:
-                asyncio.ensure_future(asyncio.to_thread(trader._save))
+                asyncio.create_task(asyncio.to_thread(trader._save))
                 ds["pending_alerts"].append(
                     f"[cyan]📋 PAPER TRADE ABIERTO #{pos['id']}: "
                     f"{pos['direction']}  entry PM {pos['entry_pm_price']:.3f}  "
@@ -451,7 +459,7 @@ async def data_loop(state: feeds.State, ds: dict, coin: str, tf: str,
             updated = trader.check_resolution(open_pos, state.pm_up, mid)
             status  = updated["status"]
             if status in paper_trading.CLOSED_STATUSES:
-                asyncio.ensure_future(asyncio.to_thread(trader._save))
+                asyncio.create_task(asyncio.to_thread(trader._save))
                 pnl      = updated["pnl"]
                 wr       = trader.summary["win_rate"]
                 exit_str = f"Salida: {updated['exit_pm_price']:.3f}"

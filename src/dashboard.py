@@ -508,14 +508,15 @@ def _live_panel(live_trader, ds: dict) -> Panel:
     if live_trader.daily_pnl <= -live_trader.daily_loss_limit:
         t.add_row("", "[bold red]🚨 DAILY LOSS LIMIT — Trading detenido[/bold red]")
 
-    # CLOSE_FAILED alert — show token and capital at risk for recent failures
-    _now = datetime.now(_tz.utc)
-    _recent_cf = [
-        p for p in live_trader._data.get("positions", [])
-        if p.get("status") == "CLOSE_FAILED"
-        and p.get("timestamp_close")
-        and (_now - datetime.fromisoformat(p["timestamp_close"])).total_seconds() < 600
-    ]
+    if live_trader._circuit_open_until > _time.time():
+        remaining = live_trader._circuit_open_until - _time.time()
+        t.add_row(
+            "",
+            f"[bold red]🔴 CIRCUIT BREAKER — reanuda en {remaining:.0f}s[/bold red]",
+        )
+
+    # CLOSE_FAILED alert — use pre-cached list, updated only on actual close failure
+    _recent_cf = live_trader._recent_close_failed
     if _recent_cf:
         for _cf in _recent_cf:
             _tid  = _cf.get("token_id", "")[:16]

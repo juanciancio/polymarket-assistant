@@ -576,6 +576,8 @@ async def main():
 
     state = feeds.State()
     state.pm_up_id, state.pm_dn_id, state.market_end_time = feeds.fetch_pm_tokens_full(coin, tf)
+    if live_trader_inst.live_trading:
+        await live_trader_inst.recover_close_failed(state)
     if state.pm_up_id:
         console.print(f"  [PM] Up   → {state.pm_up_id[:24]}…")
         console.print(f"  [PM] Down → {state.pm_dn_id[:24]}…")

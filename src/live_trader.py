@@ -291,15 +291,286 @@ class LiveTrader:
             await asyncio.sleep(0)  # yield to event loop
             resp   = await asyncio.to_thread(self.client.post_order, signed, OrderType.FOK)
             self.last_clob_call = time.time()
-            if resp.get("status") != "canceled" and resp.get("success"):
-                return resp
-            return None
+            if _DEBUG:
+                print(f"[_try_sell_once DEBUG] resp={resp}")
+            status   = resp.get("status", "?")
+            success  = resp.get("success", False)
+            order_id = resp.get("id", "?")[:16]
+            print(
+                f"[_try_sell_once] amount={contracts:.4f} "
+                f"status={status} success={success} id={order_id}"
+            )
+            if status == "canceled" or not success:
+                return None
+            return resp
         except Exception as e:
             err = str(e)
             if "couldn't be fully filled" in err or "not enough balance" in err:
                 return None  # no liquidity — caller will retry
             self._log_error("_try_sell_once", err)
             return None
+
+    async def _persistent_emergency_sell(
+        self,
+        token_id: str,
+        contracts: float,
+        capital: float,
+        coin: str,
+        timeframe: str,
+        direction: str,
+        detected_price: float,
+        actual_fill_price: float,
+        order_id: str,
+        signal: dict,
+        triggered_conditions: list,
+        btc_price: float,
+        market_end_time,        # datetime | None from state.market_end_time
+    ) -> None:
+        """Background task: retries selling until success or contract expiry.
+
+        Launched via asyncio.create_task() — never awaited inline.
+        Updates live_trades.json with real PnL on success,
+        or CLOSE_FAILED if the contract expires before selling.
+        """
+        _PCT_LADDER = [0.99, 0.97, 0.95, 0.90, 0.85, 0.80]
+        attempt     = 0
+
+        while True:
+            pct    = _PCT_LADDER[min(attempt, len(_PCT_LADDER) - 1)]
+            amount = round(contracts * pct, 4)
+            print(
+                f"[EmergencySell] intento {attempt + 1} — "
+                f"{amount:.4f} contratos token={token_id[:16]}..."
+            )
+            resp = await self._try_sell_once(token_id, amount)
+
+            if resp is not None:
+                # ── Sell succeeded ────────────────────────────────
+                try:
+                    contracts_sold  = float(resp["makingAmount"])
+                    usdc_received   = float(resp["takingAmount"])
+                    exit_price_real = usdc_received / contracts_sold
+                    pnl             = usdc_received - capital
+                except (KeyError, ZeroDivisionError):
+                    contracts_sold  = amount
+                    exit_price_real = actual_fill_price
+                    pnl             = (contracts_sold * exit_price_real) - capital
+
+                status   = "WIN_TP" if pnl > 0 else "LOSS_SL"
+                slippage = round(
+                    (actual_fill_price - detected_price) / detected_price, 4
+                )
+
+                pos_id   = len(self._data["positions"]) + 1
+                position = {
+                    "id":                   pos_id,
+                    "timestamp_open":       datetime.now(timezone.utc).isoformat(),
+                    "timestamp_close":      datetime.now(timezone.utc).isoformat(),
+                    "coin":                 coin,
+                    "timeframe":            timeframe,
+                    "direction":            direction,
+                    "token_id":             token_id,
+                    "entry_price_detected": detected_price,
+                    "entry_price_max":      round(detected_price * 1.02, 4),
+                    "entry_price_real":     actual_fill_price,
+                    "slippage_applied":     slippage,
+                    "exit_price_detected":  exit_price_real,
+                    "exit_price_real":      exit_price_real,
+                    "entry_btc_price":      btc_price,
+                    "exit_btc_price":       btc_price,
+                    "capital":              capital,
+                    "contracts":            contracts,
+                    "tp_target":            None,
+                    "sl_target":            None,
+                    "highest_price":        actual_fill_price,
+                    "ticks_open":           0,
+                    "pnl_usd":              pnl,
+                    "status":               status,
+                    "order_id":             order_id,
+                    "close_order_id":       resp.get("id") or resp.get("orderID") or "",
+                    "score":                signal.get("score", 0),
+                    "conviction_level":     signal.get("conviction_level", ""),
+                    "triggered_conditions": triggered_conditions,
+                    "contracts_sold":       contracts_sold,
+                }
+                self._data["positions"].append(position)
+                self.daily_pnl += pnl
+                self._recalc_summary()
+                await asyncio.to_thread(self._save)
+                print(
+                    f"[EmergencySell] ✅ vendido en intento {attempt + 1} — "
+                    f"status={status} pnl={pnl:+.2f} "
+                    f"exit={exit_price_real:.4f}"
+                )
+                return
+
+            # ── Sell failed — check if contract expired ───────────
+            attempt += 1
+            now = datetime.now(timezone.utc)
+
+            if market_end_time is not None and now >= market_end_time:
+                print(
+                    f"[EmergencySell] ⏰ contrato expirado — "
+                    f"guardando CLOSE_FAILED token={token_id[:16]}..."
+                )
+                self._save_close_failed(
+                    token_id, contracts, capital, coin, timeframe,
+                    direction, detected_price, actual_fill_price,
+                    order_id, signal, triggered_conditions, btc_price,
+                )
+                return
+
+            # ── Wait before next attempt — increasing backoff ─────
+            wait = 5 if attempt < 3 else 15
+            print(
+                f"[EmergencySell] sin liquidez — "
+                f"reintentando en {wait}s (intento {attempt + 1})..."
+            )
+            await asyncio.sleep(wait)
+
+    def _save_close_failed(
+        self,
+        token_id: str,
+        contracts: float,
+        capital: float,
+        coin: str,
+        timeframe: str,
+        direction: str,
+        detected_price: float,
+        actual_fill_price: float,
+        order_id: str,
+        signal: dict,
+        triggered_conditions: list,
+        btc_price: float,
+    ) -> None:
+        slippage = round(
+            (actual_fill_price - detected_price) / detected_price, 4
+        )
+        pos_id   = len(self._data["positions"]) + 1
+        position = {
+            "id":                   pos_id,
+            "timestamp_open":       datetime.now(timezone.utc).isoformat(),
+            "timestamp_close":      datetime.now(timezone.utc).isoformat(),
+            "coin":                 coin,
+            "timeframe":            timeframe,
+            "direction":            direction,
+            "token_id":             token_id,
+            "entry_price_detected": detected_price,
+            "entry_price_max":      round(detected_price * 1.02, 4),
+            "entry_price_real":     actual_fill_price,
+            "slippage_applied":     slippage,
+            "exit_price_detected":  None,
+            "exit_price_real":      None,
+            "entry_btc_price":      btc_price,
+            "exit_btc_price":       None,
+            "capital":              capital,
+            "contracts":            contracts,
+            "tp_target":            None,
+            "sl_target":            None,
+            "highest_price":        actual_fill_price,
+            "ticks_open":           0,
+            "pnl_usd":              None,
+            "status":               "CLOSE_FAILED",
+            "order_id":             order_id,
+            "close_order_id":       None,
+            "score":                signal.get("score", 0),
+            "conviction_level":     signal.get("conviction_level", ""),
+            "triggered_conditions": triggered_conditions,
+        }
+        self._data["positions"].append(position)
+        self._recalc_summary()
+        self._recent_close_failed = [
+            p for p in self._data["positions"]
+            if p.get("status") == "CLOSE_FAILED"
+        ]
+        self._save()
+        self.last_close_timestamp = datetime.now(timezone.utc)
+        print(
+            f"[EmergencySell] 🚨 CLOSE_FAILED guardado #{pos_id} — "
+            f"capital=${capital:.2f} en riesgo — "
+            f"verificar en polymarket.com"
+        )
+
+    async def recover_close_failed(self, state) -> None:
+        """On startup: re-launch background sell tasks for any
+        CLOSE_FAILED positions left from a previous session.
+
+        Called once from main.py after LiveTrader is initialized
+        and state tokens are loaded.
+        """
+        failed = [
+            p for p in self._data["positions"]
+            if p.get("status") == "CLOSE_FAILED"
+               and p.get("token_id")
+               and p.get("contracts")
+        ]
+        if not failed:
+            return
+
+        print(
+            f"  [LiveTrader] ⚠️  {len(failed)} posición(es) CLOSE_FAILED "
+            f"encontradas — lanzando recovery tasks..."
+        )
+        active_tokens = {
+            getattr(state, "pm_up_id", None),
+            getattr(state, "pm_dn_id", None),
+        }
+        active_tokens.discard(None)
+
+        for pos in failed:
+            token_id = pos.get("token_id", "")
+            print(
+                f"  [LiveTrader] 🔄 recovery #{pos['id']} — "
+                f"token={token_id[:16]}... "
+                f"capital=${pos['capital']:.2f}"
+            )
+
+            # If token is not the current active contract it already
+            # expired — Polymarket resolved it, we cannot sell anymore.
+            if active_tokens and token_id not in active_tokens:
+                print(
+                    f"  [LiveTrader] ⏰ token expirado — "
+                    f"registrando como LOSS_SL sin recovery "
+                    f"(contrato ya resuelto por Polymarket)"
+                )
+                pos["status"]          = "LOSS_SL"
+                pos["pnl_usd"]         = -pos["capital"]
+                pos["timestamp_close"] = datetime.now(timezone.utc).isoformat()
+                self.daily_pnl        += pos["pnl_usd"]
+                self._recalc_summary()
+                self._recent_close_failed = [
+                    p for p in self._data["positions"]
+                    if p.get("status") == "CLOSE_FAILED"
+                ]
+                self._save()
+                print(
+                    f"  [LiveTrader] 📝 #{pos['id']} cerrado como LOSS_SL "
+                    f"pnl=-${pos['capital']:.2f} (capital total perdido)"
+                )
+                continue
+
+            # Token is still active — launch background sell task
+            signal = {
+                "score":            pos.get("score", 0),
+                "conviction_level": pos.get("conviction_level", ""),
+            }
+            asyncio.create_task(
+                self._persistent_emergency_sell(
+                    token_id          = token_id,
+                    contracts         = pos["contracts"],
+                    capital           = pos["capital"],
+                    coin              = pos["coin"],
+                    timeframe         = pos["timeframe"],
+                    direction         = pos["direction"],
+                    detected_price    = pos["entry_price_detected"],
+                    actual_fill_price = pos["entry_price_real"],
+                    order_id          = pos.get("order_id", ""),
+                    signal            = signal,
+                    triggered_conditions = pos.get("triggered_conditions", []),
+                    btc_price         = pos.get("entry_btc_price", 0.0),
+                    market_end_time   = getattr(state, "market_end_time", None),
+                )
+            )
 
     async def execute_signal(
         self,
@@ -354,6 +625,29 @@ class LiveTrader:
         if self.current_open_position is not None:
             print("[LiveTrader] ❌ bloqueado: posición ya abierta")
             return None
+
+        # 3b. Block new entries while background sell task is working
+        # on a CLOSE_FAILED position — capital is still committed
+        # in Polymarket and balance may be insufficient.
+        if self._recent_close_failed:
+            token_cf  = self._recent_close_failed[-1].get("token_id", "")
+            active_tokens = set()
+            if state is not None:
+                if getattr(state, "pm_up_id", None):
+                    active_tokens.add(state.pm_up_id)
+                if getattr(state, "pm_dn_id", None):
+                    active_tokens.add(state.pm_dn_id)
+            # Only block if the CLOSE_FAILED token is still active
+            # (background task is still working on it).
+            # If token expired, Polymarket resolved it and
+            # balance already returned — allow new entries.
+            if not active_tokens or token_cf in active_tokens:
+                print(
+                    f"[LiveTrader] 🚨 bloqueado: CLOSE_FAILED activo "
+                    f"token={token_cf[:16]}... — "
+                    f"esperando resolución del background sell"
+                )
+                return None
 
         # 4. Daily loss limit
         if self.daily_pnl <= -self.daily_loss_limit:
@@ -420,30 +714,20 @@ class LiveTrader:
                 )
                 return None
         if direction == "SHORT":
-            if not (0.35 <= detected_price < short_upper):
+            if not (0.30 <= detected_price < short_upper):
                 print(
                     f"[LiveTrader] ❌ bloqueado: SHORT precio fuera de rango "
                     f"({detected_price:.4f}, límite={short_upper})"
                 )
                 return None
 
-        # 9. Two-dimensional capital: volatility tier × entry price zone
-        if detected_price > 0.80:
-            mult       = tier["multipliers"]["resolution"]
-            price_zone = "ZONA RESOLUCIÓN (>0.80)"
-        elif detected_price >= self._TRAIL_ARMED:
-            mult       = tier["multipliers"]["trail"]
-            price_zone = f"ZONA TRAIL ({detected_price:.2f})"
-        else:
-            mult       = tier["multipliers"]["normal"]
-            price_zone = f"ZONA NORMAL ({detected_price:.2f})"
-
-        capital = min(round(self.max_position_size * mult, 2), self.max_position_size * 3.0)
+        # 9. Flat capital — 1× always
+        capital = self.max_position_size
 
         print(
             f"[LiveTrader] {tier['emoji']} {tier['tier']} ({volatility:.3f}%) "
             f"→ capital=${capital:.2f} LONG≤{long_upper} SHORT≤{short_upper} "
-            f"min={tier['min_secs']}s ({price_zone})"
+            f"min={tier['min_secs']}s"
         )
 
         # Max price with slippage
@@ -569,7 +853,24 @@ class LiveTrader:
                         "execute_signal",
                         f"Large negative slippage {real_slippage * 100:+.2f}% — immediate sell",
                     )
-                    await self._try_sell_once(token_id, round(contracts * 0.99, 4))
+                    self.last_close_timestamp = datetime.now(timezone.utc)
+                    asyncio.create_task(
+                        self._persistent_emergency_sell(
+                            token_id          = token_id,
+                            contracts         = contracts,
+                            capital           = capital,
+                            coin              = coin,
+                            timeframe         = timeframe,
+                            direction         = direction,
+                            detected_price    = detected_price,
+                            actual_fill_price = actual_fill_price,
+                            order_id          = response.get("id") or response.get("orderID") or "",
+                            signal            = signal,
+                            triggered_conditions = triggered_conditions,
+                            btc_price         = btc_price,
+                            market_end_time   = getattr(state, "market_end_time", None),
+                        )
+                    )
                     return None
 
                 if real_slippage > 0.05:
@@ -598,7 +899,24 @@ class LiveTrader:
                         f"Fill {actual_fill_price:.4f} beyond LONG upper {long_upper:.2f} "
                         f"— immediate sell",
                     )
-                    await self._try_sell_once(token_id, round(contracts * 0.99, 4))
+                    self.last_close_timestamp = datetime.now(timezone.utc)
+                    asyncio.create_task(
+                        self._persistent_emergency_sell(
+                            token_id          = token_id,
+                            contracts         = contracts,
+                            capital           = capital,
+                            coin              = coin,
+                            timeframe         = timeframe,
+                            direction         = direction,
+                            detected_price    = detected_price,
+                            actual_fill_price = actual_fill_price,
+                            order_id          = response.get("id") or response.get("orderID") or "",
+                            signal            = signal,
+                            triggered_conditions = triggered_conditions,
+                            btc_price         = btc_price,
+                            market_end_time   = getattr(state, "market_end_time", None),
+                        )
+                    )
                     return None
 
                 if direction == "SHORT" and actual_fill_price > short_upper:
@@ -611,7 +929,24 @@ class LiveTrader:
                         f"Fill {actual_fill_price:.4f} beyond SHORT upper {short_upper:.2f} "
                         f"— immediate sell",
                     )
-                    await self._try_sell_once(token_id, round(contracts * 0.99, 4))
+                    self.last_close_timestamp = datetime.now(timezone.utc)
+                    asyncio.create_task(
+                        self._persistent_emergency_sell(
+                            token_id          = token_id,
+                            contracts         = contracts,
+                            capital           = capital,
+                            coin              = coin,
+                            timeframe         = timeframe,
+                            direction         = direction,
+                            detected_price    = detected_price,
+                            actual_fill_price = actual_fill_price,
+                            order_id          = response.get("id") or response.get("orderID") or "",
+                            signal            = signal,
+                            triggered_conditions = triggered_conditions,
+                            btc_price         = btc_price,
+                            market_end_time   = getattr(state, "market_end_time", None),
+                        )
+                    )
                     return None
 
                 # Guard: contracts truly absurd (> capital / 0.10) — emergency sell then abort
@@ -620,7 +955,24 @@ class LiveTrader:
                         "execute_signal",
                         f"Contracts absurdos: {contracts:.2f} — emergency sell attempt",
                     )
-                    await self._try_sell_once(token_id, round(contracts * 0.90, 4))
+                    self.last_close_timestamp = datetime.now(timezone.utc)
+                    asyncio.create_task(
+                        self._persistent_emergency_sell(
+                            token_id          = token_id,
+                            contracts         = contracts,
+                            capital           = capital,
+                            coin              = coin,
+                            timeframe         = timeframe,
+                            direction         = direction,
+                            detected_price    = detected_price,
+                            actual_fill_price = actual_fill_price,
+                            order_id          = response.get("id") or response.get("orderID") or "",
+                            signal            = signal,
+                            triggered_conditions = triggered_conditions,
+                            btc_price         = btc_price,
+                            market_end_time   = getattr(state, "market_end_time", None),
+                        )
+                    )
                     return None
 
                 tp_target  = math.floor((actual_fill_price + 0.09) * 100) / 100
@@ -709,13 +1061,28 @@ class LiveTrader:
                 )
                 try:
                     emergency_contracts = float(response.get("takingAmount", 0))
+                    emergency_fill      = actual_fill_price if "actual_fill_price" in dir() else detected_price
                     if emergency_contracts > 0:
-                        await self._try_sell_once(
-                            token_id,
-                            round(emergency_contracts * 0.90, 4)
+                        self.last_close_timestamp = datetime.now(timezone.utc)
+                        asyncio.create_task(
+                            self._persistent_emergency_sell(
+                                token_id          = token_id,
+                                contracts         = emergency_contracts,
+                                capital           = capital,
+                                coin              = coin,
+                                timeframe         = timeframe,
+                                direction         = direction,
+                                detected_price    = detected_price,
+                                actual_fill_price = emergency_fill,
+                                order_id          = response.get("id") or response.get("orderID") or "",
+                                signal            = signal,
+                                triggered_conditions = triggered_conditions,
+                                btc_price         = btc_price,
+                                market_end_time   = getattr(state, "market_end_time", None),
+                            )
                         )
                         print(
-                            f"[LiveTrader] 🚨 emergency sell attempted after "
+                            f"[LiveTrader] 🚨 background emergency sell launched after "
                             f"post-buy crash — verify in Polymarket"
                         )
                 except Exception as sell_err:
@@ -753,9 +1120,10 @@ class LiveTrader:
         capital     = position["capital"]
 
         # Price of held contract
-        current = (
+        current = round(
             current_pm_up_price if direction == "LONG"
-            else 1.0 - current_pm_up_price
+            else 1.0 - current_pm_up_price,
+            2
         )
 
         # Update highest price
@@ -850,15 +1218,43 @@ class LiveTrader:
             print(f"[LiveTrader] ⚠️ intento {attempt} sin liquidez")
 
         if response is None:
-            position["status"]          = "CLOSE_FAILED"
-            position["timestamp_close"] = datetime.now(timezone.utc).isoformat()
-            # Activate cooldown — capital may still be committed on Polymarket
+            print(
+                f"[LiveTrader] ⚠️  4 intentos fallidos — "
+                f"lanzando background sell task para {token_id[:16]}..."
+            )
             self.last_close_timestamp = datetime.now(timezone.utc)
-            self._recent_close_failed = [
+            self._open_position       = None
+
+            # Build minimal signal from position
+            _signal = {
+                "score":            position.get("score", 0),
+                "conviction_level": position.get("conviction_level", ""),
+            }
+            asyncio.create_task(
+                self._persistent_emergency_sell(
+                    token_id          = token_id,
+                    contracts         = contracts,
+                    capital           = position["capital"],
+                    coin              = position["coin"],
+                    timeframe         = position["timeframe"],
+                    direction         = direction,
+                    detected_price    = position["entry_price_detected"],
+                    actual_fill_price = position["entry_price_real"],
+                    order_id          = position.get("order_id", ""),
+                    signal            = _signal,
+                    triggered_conditions = position.get("triggered_conditions", []),
+                    btc_price         = btc_price,
+                    market_end_time   = getattr(state, "market_end_time", None),
+                )
+            )
+            # Remove position from active list — background task owns it now
+            self._data["positions"] = [
                 p for p in self._data["positions"]
-                if p.get("status") == "CLOSE_FAILED"
+                if p["id"] != position["id"]
             ]
-            print("⚠️  CLOSE_FAILED — cooldown activado, revisar posición manualmente")
+            self._recalc_summary()
+            await asyncio.to_thread(self._save)
+            return False
         else:
             try:
                 contracts_sold  = float(response["makingAmount"])
@@ -940,56 +1336,76 @@ class LiveTrader:
         if pos is None or current_pm_up_price is None:
             return None
         direction = pos["direction"]
-        current_contract = (
+        current_contract = round(
             current_pm_up_price if direction == "LONG"
-            else 1.0 - current_pm_up_price
+            else 1.0 - current_pm_up_price,
+            2
         )
         return (pos["contracts"] * current_contract) - pos["capital"]
 
     _TRAIL_ARMED = 0.72  # trailing stop arms once price reaches this level
 
     def _recent_volatility(self, state) -> float:
-        v = calc_volatility(state.trades, state.mid or 1.0)
-        return v if v >= 0 else 1.0  # treat no-data as volatile for entry guard
+        # Binance spot volatility
+        v_spot = calc_volatility(state.trades, state.mid or 1.0)
+
+        # PM contract volatility — measures how much the PM Up contract
+        # itself has moved in the last ~30 ticks (~60s at 0.5Hz)
+        # This catches cases where spot is calm but PM is gapping
+        v_pm = -1.0
+        history = getattr(state, "_pm_price_history", [])
+        if len(history) >= 2:
+            hi = max(history)
+            lo = min(history)
+            m  = (hi + lo) / 2
+            if m > 0:
+                v_pm = (hi - lo) / m * 100
+
+        # Use the more conservative (higher) of the two measures.
+        # If spot says ULTRA ESTABLE but PM is gapping → use PM value.
+        candidates = [v for v in [v_spot, v_pm] if v >= 0]
+        if not candidates:
+            return 1.0  # no data → treat as volatile
+        result = max(candidates)
+
+        if v_pm >= 0 and v_pm > v_spot:
+            print(
+                f"[LiveTrader] 📊 volatilidad PM ({v_pm:.3f}%) > "
+                f"spot ({v_spot:.3f}%) — usando PM para tier"
+            )
+        return result
 
     def _volatility_tier(self, volatility: float) -> dict:
-        """Return all adaptive parameters for the given volatility level."""
+        """Return adaptive parameters for the given volatility.
+        Capital multiplier is always 1× — Polymarket contracts
+        gap independently of Binance spot volatility.
+        Tier is kept for display and min_secs only.
+        """
         if 0 <= volatility < 0.10:
-            return {
-                "tier":        "ULTRA ESTABLE",
-                "emoji":       "🚀",
-                "long_upper":  0.80,
-                "short_upper": 0.80,
-                "min_secs":    30,
-                "multipliers": {"resolution": 1.0, "trail": 2.0, "normal": 3.0},
-            }
+            tier_name = "ULTRA ESTABLE"
+            emoji     = "🚀"
+            min_secs  = 30
         elif 0 <= volatility < 0.20:
-            return {
-                "tier":        "MUY ESTABLE",
-                "emoji":       "📈",
-                "long_upper":  0.75,
-                "short_upper": 0.68,
-                "min_secs":    40,
-                "multipliers": {"resolution": 1.0, "trail": 1.5, "normal": 2.0},
-            }
+            tier_name = "MUY ESTABLE"
+            emoji     = "📈"
+            min_secs  = 40
         elif 0 <= volatility < 0.50:
-            return {
-                "tier":        "NORMAL",
-                "emoji":       "➡️",
-                "long_upper":  0.75,
-                "short_upper": 0.65,
-                "min_secs":    60,
-                "multipliers": {"resolution": 1.0, "trail": 1.0, "normal": 1.0},
-            }
+            tier_name = "NORMAL"
+            emoji     = "➡️"
+            min_secs  = 60
         else:
-            return {
-                "tier":        "VOLÁTIL",
-                "emoji":       "⚠️",
-                "long_upper":  0.75,
-                "short_upper": 0.65,
-                "min_secs":    90,
-                "multipliers": {"resolution": 1.0, "trail": 1.0, "normal": 1.0},
-            }
+            tier_name = "VOLÁTIL"
+            emoji     = "⚠️"
+            min_secs  = 90
+
+        return {
+            "tier":        tier_name,
+            "emoji":       emoji,
+            "long_upper":  0.75,
+            "short_upper": 0.70,
+            "min_secs":    min_secs,
+            "multipliers": {"resolution": 1.0, "trail": 1.0, "normal": 1.0},
+        }
 
     def _log_error(self, method: str, error) -> None:
         """Append error to errors_log.json (JSONL). Never propagates."""

@@ -400,6 +400,11 @@ def _pm_set(asset, price, state):
     if asset == state.pm_up_id:
         state.pm_up = price
         state.last_pm_update = time.time()
+        if not hasattr(state, "_pm_price_history"):
+            state._pm_price_history = []
+        state._pm_price_history.append(price)
+        if len(state._pm_price_history) > 30:
+            state._pm_price_history = state._pm_price_history[-30:]
     elif asset == state.pm_dn_id:
         state.pm_dn = price
         state.last_pm_update = time.time()

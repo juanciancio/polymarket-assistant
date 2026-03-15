@@ -54,3 +54,14 @@
 {"timestamp": "2026-03-15T00:38:34.515133+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
 {"timestamp": "2026-03-15T00:38:36.491858+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
 {"timestamp": "2026-03-15T00:38:38.348151+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance'}]"}
+{"timestamp": "2026-03-15T00:56:12.628709+00:00", "method": "execute_signal", "error": "High slippage +9.46% \u2014 detected=0.7400 fill=0.8100 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T01:32:56.281584+00:00", "method": "execute_signal", "error": "High slippage +8.43% \u2014 detected=0.8300 fill=0.9000 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T01:37:23.867968+00:00", "method": "execute_signal", "error": "High slippage +8.82% \u2014 detected=0.6800 fill=0.7400 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T01:47:18.335817+00:00", "method": "execute_signal", "error": "High slippage +5.80% \u2014 detected=0.7900 fill=0.8358 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T01:48:23.661965+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-15T03:01:40.568287+00:00", "method": "execute_signal", "error": "High slippage -8.75% \u2014 detected=0.8000 fill=0.7300 \u2014 position tracked with real fill price"}
+{"timestamp": "2026-03-15T03:27:12.453306+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-15T03:27:14.255121+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-15T03:27:16.071484+00:00", "method": "execute_signal", "error": "Fill 0.8100 beyond SHORT upper 0.80 \u2014 immediate sell"}
+{"timestamp": "2026-03-15T03:27:57.526195+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}
+{"timestamp": "2026-03-15T03:28:15.662028+00:00", "method": "place_buy_order", "error": "PolyApiException[status_code=400, error_message={'error': \"order couldn't be fully filled. FOK orders are fully filled or killed.\"}]"}

@@ -15,6 +15,7 @@ Environment variables (from .env):
 """
 
 import asyncio
+import math
 import os
 import json
 import time
@@ -94,7 +95,7 @@ class LiveTrader:
         self._opening_position: bool           = False  # guard against concurrent opens
 
         # ── Loss protection ─────────────────────────────────────────────
-        self._recent_losses: dict[str, float]  = {}    # "token_id:direction" → epoch
+        self._recent_losses: dict[str, list[float]] = {}  # "token_id:direction" → list of loss epochs
         self._consecutive_losses: int          = 0
         self._circuit_open_until: float        = 0.0   # epoch when trading resumes
 
@@ -412,14 +413,14 @@ class LiveTrader:
         short_upper = tier["short_upper"]
 
         if direction == "LONG":
-            if not (0.55 <= detected_price <= long_upper):
+            if not (0.55 <= detected_price < long_upper):
                 print(
                     f"[LiveTrader] ❌ bloqueado: LONG precio fuera de rango "
                     f"({detected_price:.4f}, límite={long_upper})"
                 )
                 return None
         if direction == "SHORT":
-            if not (0.35 <= detected_price <= short_upper):
+            if not (0.35 <= detected_price < short_upper):
                 print(
                     f"[LiveTrader] ❌ bloqueado: SHORT precio fuera de rango "
                     f"({detected_price:.4f}, límite={short_upper})"
@@ -482,20 +483,26 @@ class LiveTrader:
                 return None
             print(f"[LiveTrader] token_id={token_id[:24]}…")
 
-            # 10b. Block re-entry in same contract+direction after recent loss
+            # 10b. Block re-entry in same contract+direction after 3 losses
             # Cleanup stale entries (older than 10 min) first
+            _now = time.time()
             self._recent_losses = {
-                k: v for k, v in self._recent_losses.items()
-                if time.time() - v < 600
+                k: [t for t in v if _now - t < 600]
+                for k, v in self._recent_losses.items()
+                if any(_now - t < 600 for t in v)
             }
-            _loss_key  = f"{token_id}:{direction}"
-            _loss_time = self._recent_losses.get(_loss_key, 0.0)
-            _loss_age  = time.time() - _loss_time
-            _loss_ttl  = 300
-            if _loss_age < _loss_ttl:
+            _loss_key    = f"{token_id}:{direction}"
+            _loss_times  = self._recent_losses.get(_loss_key, [])
+            _last_switch = getattr(state, "last_token_switch", 0.0)
+            _max_losses  = 3  # block after this many losses in same contract+direction
+
+            # Only count losses that occurred after the last contract switch
+            _relevant_losses = [t for t in _loss_times if t > _last_switch]
+
+            if len(_relevant_losses) >= _max_losses:
                 print(
-                    f"[LiveTrader] ⏭️ loss reciente en este contrato+dirección "
-                    f"({_loss_age:.0f}s ago) — esperando {_loss_ttl - _loss_age:.0f}s"
+                    f"[LiveTrader] ⏭️ {len(_relevant_losses)} losses en este contrato+dirección "
+                    f"— bloqueado hasta nuevo contrato"
                 )
                 return None
 
@@ -529,127 +536,191 @@ class LiveTrader:
             if response is None:
                 return None
 
-            # 14. Real fill price — derived from makingAmount / takingAmount
-            # Polymarket never returns a "price" field in FOK responses.
-            if _DEBUG: print(f"[LiveTrader DEBUG] buy response completo: {response}")
-            contracts         = float(response["takingAmount"])
-            actual_fill_price = float(response["makingAmount"]) / contracts
-            if _DEBUG:
+            # From here: buy is executed in Polymarket.
+            # Any exception must attempt emergency sell to avoid orphaned capital.
+            try:
+                # 14. Real fill price — derived from makingAmount / takingAmount
+                # Polymarket never returns a "price" field in FOK responses.
+                if _DEBUG: print(f"[LiveTrader DEBUG] buy response completo: {response}")
+                contracts         = float(response["takingAmount"])
+                actual_fill_price = float(response["makingAmount"]) / contracts
+                if _DEBUG:
+                    print(
+                        f"[LiveTrader DEBUG] fill price derivado: {actual_fill_price:.4f} "
+                        f"(making={response['makingAmount']} taking={response['takingAmount']})"
+                    )
+
+                # Guard: fill price must be in safe range (not a near-resolved contract)
+                if actual_fill_price < 0.05 or actual_fill_price > 0.95:
+                    self._log_error(
+                        "execute_signal",
+                        f"Precio fuera de rango seguro: {actual_fill_price:.4f} — abortando",
+                    )
+                    return None
+
+                # Warning: high slippage — sell immediately on large negative, warn on positive
+                real_slippage = (actual_fill_price - detected_price) / detected_price
+                if real_slippage < -0.05:
+                    print(
+                        f"[LiveTrader] ❌ slippage negativo alto: {real_slippage * 100:+.2f}% "
+                        f"— mercado revertió en entrada, vendiendo inmediatamente"
+                    )
+                    self._log_error(
+                        "execute_signal",
+                        f"Large negative slippage {real_slippage * 100:+.2f}% — immediate sell",
+                    )
+                    await self._try_sell_once(token_id, round(contracts * 0.99, 4))
+                    return None
+
+                if real_slippage > 0.05:
+                    print(
+                        f"[LiveTrader] ⚠️ high slippage: {real_slippage * 100:+.2f}% "
+                        f"(detected={detected_price:.4f} fill={actual_fill_price:.4f}) "
+                        f"— tracking with real fill price"
+                    )
+                    self._log_error(
+                        "execute_signal",
+                        f"High slippage {real_slippage * 100:+.2f}% — "
+                        f"detected={detected_price:.4f} fill={actual_fill_price:.4f} "
+                        f"— position tracked with real fill price",
+                    )
+
+                if _DEBUG: print(f"[LiveTrader DEBUG] contracts reales del response: {contracts}")
+
+                # Guard: fill price pushed by slippage beyond the allowed range for this direction
+                if direction == "LONG" and actual_fill_price > long_upper:
+                    print(
+                        f"[LiveTrader] ❌ fill price {actual_fill_price:.4f} "
+                        f"excede límite LONG {long_upper:.2f} — vendiendo inmediatamente"
+                    )
+                    self._log_error(
+                        "execute_signal",
+                        f"Fill {actual_fill_price:.4f} beyond LONG upper {long_upper:.2f} "
+                        f"— immediate sell",
+                    )
+                    await self._try_sell_once(token_id, round(contracts * 0.99, 4))
+                    return None
+
+                if direction == "SHORT" and actual_fill_price > short_upper:
+                    print(
+                        f"[LiveTrader] ❌ fill price {actual_fill_price:.4f} "
+                        f"excede límite SHORT {short_upper:.2f} — vendiendo inmediatamente"
+                    )
+                    self._log_error(
+                        "execute_signal",
+                        f"Fill {actual_fill_price:.4f} beyond SHORT upper {short_upper:.2f} "
+                        f"— immediate sell",
+                    )
+                    await self._try_sell_once(token_id, round(contracts * 0.99, 4))
+                    return None
+
+                # Guard: contracts truly absurd (> capital / 0.10) — emergency sell then abort
+                if contracts > capital / 0.10:
+                    self._log_error(
+                        "execute_signal",
+                        f"Contracts absurdos: {contracts:.2f} — emergency sell attempt",
+                    )
+                    await self._try_sell_once(token_id, round(contracts * 0.90, 4))
+                    return None
+
+                tp_target  = math.floor((actual_fill_price + 0.09) * 100) / 100
+
+                # Tighter SL when trail is already armed at entry, or capital is elevated
+                if actual_fill_price >= self._TRAIL_ARMED:
+                    sl_target = math.ceil((actual_fill_price - 0.08) * 100) / 100
+                    sl_used   = 0.08
+                    print(
+                        f"[LiveTrader] ⚠️ trail armado en entrada "
+                        f"({actual_fill_price:.4f} >= {self._TRAIL_ARMED}) "
+                        f"— SL ajustado a {sl_target:.4f} (−0.08)"
+                    )
+                elif capital > self.max_position_size:
+                    sl_target = math.ceil((actual_fill_price - 0.10) * 100) / 100
+                    sl_used   = 0.10
+                else:
+                    sl_target = math.ceil((actual_fill_price - 0.15) * 100) / 100
+                    sl_used   = 0.15
                 print(
-                    f"[LiveTrader DEBUG] fill price derivado: {actual_fill_price:.4f} "
-                    f"(making={response['makingAmount']} taking={response['takingAmount']})"
+                    f"[LiveTrader] SL: {sl_target:.4f} "
+                    f"(−{sl_used} | capital=${capital:.2f})"
+                )
+                slippage_applied = round(
+                    (actual_fill_price - detected_price) / detected_price, 4
                 )
 
-            # Guard: fill price must be in safe range (not a near-resolved contract)
-            if actual_fill_price < 0.05 or actual_fill_price > 0.95:
-                self._log_error(
-                    "execute_signal",
-                    f"Precio fuera de rango seguro: {actual_fill_price:.4f} — abortando",
+                # 16. Build and persist position
+                position_ts = datetime.now(timezone.utc)  # accurate open time post-fill
+                pos_id   = len(self._data["positions"]) + 1
+                order_id = response.get("id") or response.get("orderID") or ""
+
+                position = {
+                    "id":                   pos_id,
+                    "timestamp_open":       position_ts.isoformat(),
+                    "timestamp_close":      None,
+                    "coin":                 coin,
+                    "timeframe":            timeframe,
+                    "direction":            direction,
+                    "token_id":             token_id,
+                    "entry_price_detected": detected_price,
+                    "entry_price_max":      max_price,
+                    "entry_price_real":     actual_fill_price,
+                    "slippage_applied":     slippage_applied,
+                    "exit_price_detected":  None,
+                    "exit_price_real":      None,
+                    "entry_btc_price":      btc_price,
+                    "exit_btc_price":       None,
+                    "capital":              capital,
+                    "contracts":            contracts,
+                    "tp_target":            tp_target,
+                    "sl_target":            sl_target,
+                    "highest_price":        actual_fill_price,
+                    "ticks_open":           0,
+                    "pnl_usd":              None,
+                    "status":               "OPEN",
+                    "order_id":             order_id,
+                    "close_order_id":       None,
+                    "score":                signal.get("score", 0),
+                    "conviction_level":     cl,
+                    "triggered_conditions": triggered_conditions,
+                }
+
+                self._data["positions"].append(position)
+                self._recalc_summary()
+                self._open_position = position
+                await asyncio.to_thread(self._save)
+                self.recent_trades.append(position_ts)
+
+                slip_pct = slippage_applied * 100
+                print(
+                    f"  [LiveTrader] OPENED {direction} {coin} {timeframe}  "
+                    f"detected: {detected_price:.4f}  fill: {actual_fill_price:.4f}  "
+                    f"slip: {slip_pct:+.2f}%"
                 )
+
+                # 17. Return opened position
+                return position
+
+            except Exception as e:
+                self._log_error(
+                    "execute_signal.post_buy",
+                    f"CRITICAL: buy executed but position saving failed: {e} "
+                    f"— attempting emergency sell token={token_id[:16]} "
+                    f"contracts={response.get('takingAmount', '?')}"
+                )
+                try:
+                    emergency_contracts = float(response.get("takingAmount", 0))
+                    if emergency_contracts > 0:
+                        await self._try_sell_once(
+                            token_id,
+                            round(emergency_contracts * 0.90, 4)
+                        )
+                        print(
+                            f"[LiveTrader] 🚨 emergency sell attempted after "
+                            f"post-buy crash — verify in Polymarket"
+                        )
+                except Exception as sell_err:
+                    self._log_error("execute_signal.emergency_sell", str(sell_err))
                 return None
-
-            # Warning: high slippage — track anyway, never abort after a successful buy
-            real_slippage = (actual_fill_price - detected_price) / detected_price
-            if abs(real_slippage) > 0.05:
-                print(
-                    f"[LiveTrader] ⚠️ high slippage: {real_slippage * 100:+.2f}% "
-                    f"(detected={detected_price:.4f} fill={actual_fill_price:.4f}) "
-                    f"— tracking with real fill price"
-                )
-                self._log_error(
-                    "execute_signal",
-                    f"High slippage {real_slippage * 100:+.2f}% — "
-                    f"detected={detected_price:.4f} fill={actual_fill_price:.4f} "
-                    f"— position tracked with real fill price",
-                )
-
-            if _DEBUG: print(f"[LiveTrader DEBUG] contracts reales del response: {contracts}")
-
-            # Guard: contracts truly absurd (> capital / 0.10) — emergency sell then abort
-            if contracts > capital / 0.10:
-                self._log_error(
-                    "execute_signal",
-                    f"Contracts absurdos: {contracts:.2f} — emergency sell attempt",
-                )
-                await self._try_sell_once(token_id, round(contracts * 0.90, 4))
-                return None
-
-            tp_target  = round(actual_fill_price + 0.10, 4)
-
-            # Tighter SL when trail is already armed at entry, or capital is elevated
-            if actual_fill_price >= _TRAIL_ARMED:
-                sl_target = round(actual_fill_price - 0.08, 4)
-                sl_used   = 0.08
-                print(
-                    f"[LiveTrader] ⚠️ trail armado en entrada "
-                    f"({actual_fill_price:.4f} >= {_TRAIL_ARMED}) "
-                    f"— SL ajustado a {sl_target:.4f} (−0.08)"
-                )
-            elif capital > self.max_position_size:
-                sl_target = round(actual_fill_price - 0.10, 4)
-                sl_used   = 0.10
-            else:
-                sl_target = round(actual_fill_price - 0.15, 4)
-                sl_used   = 0.15
-            print(
-                f"[LiveTrader] SL: {sl_target:.4f} "
-                f"(−{sl_used} | capital=${capital:.2f})"
-            )
-            slippage_applied = round(
-                (actual_fill_price - detected_price) / detected_price, 4
-            )
-
-            # 16. Build and persist position
-            position_ts = datetime.now(timezone.utc)  # accurate open time post-fill
-            pos_id   = len(self._data["positions"]) + 1
-            order_id = response.get("id") or response.get("orderID") or ""
-
-            position = {
-                "id":                   pos_id,
-                "timestamp_open":       position_ts.isoformat(),
-                "timestamp_close":      None,
-                "coin":                 coin,
-                "timeframe":            timeframe,
-                "direction":            direction,
-                "token_id":             token_id,
-                "entry_price_detected": detected_price,
-                "entry_price_max":      max_price,
-                "entry_price_real":     actual_fill_price,
-                "slippage_applied":     slippage_applied,
-                "exit_price_detected":  None,
-                "exit_price_real":      None,
-                "entry_btc_price":      btc_price,
-                "exit_btc_price":       None,
-                "capital":              capital,
-                "contracts":            contracts,
-                "tp_target":            tp_target,
-                "sl_target":            sl_target,
-                "highest_price":        actual_fill_price,
-                "ticks_open":           0,
-                "pnl_usd":              None,
-                "status":               "OPEN",
-                "order_id":             order_id,
-                "close_order_id":       None,
-                "score":                signal.get("score", 0),
-                "conviction_level":     cl,
-                "triggered_conditions": triggered_conditions,
-            }
-
-            self._data["positions"].append(position)
-            self._recalc_summary()
-            self._open_position = position
-            await asyncio.to_thread(self._save)
-            self.recent_trades.append(position_ts)
-
-            slip_pct = slippage_applied * 100
-            print(
-                f"  [LiveTrader] OPENED {direction} {coin} {timeframe}  "
-                f"detected: {detected_price:.4f}  fill: {actual_fill_price:.4f}  "
-                f"slip: {slip_pct:+.2f}%"
-            )
-
-            # 17. Return opened position
-            return position
 
         finally:
             self._opening_position = False
@@ -703,8 +774,8 @@ class LiveTrader:
             new_status          = "WIN_TP"
             exit_contract_price = current
 
-        # 2. Trailing stop — armed at 0.72, fires on 12% drop from peak
-        elif highest >= 0.72 and current <= round(highest - 0.12, 4):
+        # 2. Trailing stop — armed at _TRAIL_ARMED, fires on 12% drop from peak
+        elif highest >= self._TRAIL_ARMED and current <= round(highest - 0.12, 4):
             exit_contract_price = current
             new_status = "WIN_TRAIL" if exit_contract_price > entry_price else "LOSS_SL"
 
@@ -836,7 +907,9 @@ class LiveTrader:
             # Loss protection bookkeeping
             if new_status in ("LOSS_SL", "LOSS_FULL"):
                 loss_key = f"{token_id}:{direction}"
-                self._recent_losses[loss_key] = time.time()
+                if loss_key not in self._recent_losses:
+                    self._recent_losses[loss_key] = []
+                self._recent_losses[loss_key].append(time.time())
                 self._consecutive_losses += 1
                 if self._consecutive_losses >= 3:
                     pause = 300
@@ -885,8 +958,8 @@ class LiveTrader:
             return {
                 "tier":        "ULTRA ESTABLE",
                 "emoji":       "🚀",
-                "long_upper":  0.85,
-                "short_upper": 0.85,
+                "long_upper":  0.80,
+                "short_upper": 0.80,
                 "min_secs":    30,
                 "multipliers": {"resolution": 1.0, "trail": 2.0, "normal": 3.0},
             }
@@ -894,8 +967,8 @@ class LiveTrader:
             return {
                 "tier":        "MUY ESTABLE",
                 "emoji":       "📈",
-                "long_upper":  0.78,
-                "short_upper": 0.70,
+                "long_upper":  0.75,
+                "short_upper": 0.68,
                 "min_secs":    40,
                 "multipliers": {"resolution": 1.0, "trail": 1.5, "normal": 2.0},
             }
